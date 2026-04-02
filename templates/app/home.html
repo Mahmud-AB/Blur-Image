@@ -1,0 +1,748 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="csrf-token" content="{{ csrf_token }}">
+    <title>Image Upload</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="min-h-screen bg-[#18181b] text-white">
+    <div class="fixed inset-0 -z-10 bg-[radial-gradient(circle_at_top,_rgba(244,63,94,0.16),_transparent_30%),radial-gradient(circle_at_bottom_right,_rgba(56,189,248,0.14),_transparent_28%)]"></div>
+    <main class="mx-auto flex min-h-screen max-w-6xl flex-col px-6 py-10 sm:px-10">
+        {% if user.is_authenticated %}
+        <section class="mb-6 flex items-center justify-between rounded-2xl border border-white/10 bg-black/20 px-5 py-4">
+            <p class="text-sm text-zinc-300">
+                Signed in as <span class="font-semibold text-white">{{ user.username }}</span>
+            </p>
+            <form method="post" action="{% url 'logout' %}">
+                {% csrf_token %}
+                <button type="submit" class="rounded-full border border-white/15 px-4 py-2 text-sm text-zinc-200 transition hover:bg-white/10">
+                    Logout
+                </button>
+            </form>
+        </section>
+        <section class="mt-6">
+            <div class="mb-5">
+                <p class="text-sm uppercase tracking-[0.35em] text-rose-300">Image Gallery</p>
+                <h1 class="mt-3 text-4xl font-black text-white sm:text-5xl">Upload and preview images</h1>
+                <p class="mt-3 max-w-2xl text-sm leading-7 text-zinc-400">
+                    Choose one or more images. They are saved immediately, then shown as thumbnails on the left with a large preview on the right.
+                </p>
+            </div>
+
+            <label for="imageUpload" class="group flex min-h-[120px] cursor-pointer items-center justify-center rounded-[2rem] border border-rose-500/60 bg-zinc-900/80 px-6 text-xl font-semibold text-rose-300 shadow-[0_20px_80px_rgba(0,0,0,0.35)] transition hover:border-rose-400 hover:bg-zinc-900">
+                <span class="rounded-full border border-rose-400/40 bg-rose-500/10 px-6 py-3 transition group-hover:bg-rose-500/20">
+                    Upload images
+                </span>
+                <input id="imageUpload" type="file" accept="image/*" multiple class="hidden">
+            </label>
+            <p id="statusText" class="mt-4 text-sm text-zinc-400">Waiting for upload.</p>
+        </section>
+        {% else %}
+        <section class="mx-auto mt-10 w-full max-w-md rounded-3xl border border-white/10 bg-black/20 p-6">
+            <p class="text-sm uppercase tracking-[0.35em] text-rose-300">Authentication</p>
+            <h1 class="mt-3 text-3xl font-black text-white">Sign up or log in</h1>
+            <p class="mt-2 text-sm text-zinc-400">Use username and password. New accounts are activated immediately.</p>
+            {% if auth_error %}
+                <p class="mt-4 rounded-xl border border-rose-400/30 bg-rose-500/10 px-4 py-3 text-sm text-rose-200">{{ auth_error }}</p>
+            {% endif %}
+            <div class="mt-6 flex gap-2 rounded-xl border border-white/10 bg-zinc-900/60 p-1">
+                <button id="signupTabBtn" type="button" class="auth-tab-btn w-1/2 rounded-lg px-4 py-2 text-sm font-semibold transition bg-rose-400 text-zinc-950">
+                    Sign up
+                </button>
+                <button id="loginTabBtn" type="button" class="auth-tab-btn w-1/2 rounded-lg px-4 py-2 text-sm font-semibold transition text-zinc-300 hover:bg-white/5">
+                    Log in
+                </button>
+            </div>
+            <form id="signupForm" method="post" action="{% url 'signup' %}" class="mt-4 space-y-3">
+                {% csrf_token %}
+                <input name="username" type="text" required placeholder="Username" class="w-full rounded-xl border border-white/10 bg-zinc-900/80 px-4 py-3 text-sm text-white outline-none transition focus:border-rose-400">
+                <input name="password" type="password" required placeholder="Password" class="w-full rounded-xl border border-white/10 bg-zinc-900/80 px-4 py-3 text-sm text-white outline-none transition focus:border-rose-400">
+                <button type="submit" class="w-full rounded-full bg-rose-400 px-4 py-3 text-sm font-semibold text-zinc-950 transition hover:bg-rose-300">
+                    Sign up
+                </button>
+            </form>
+            <form id="loginForm" method="post" action="{% url 'login' %}" class="mt-4 hidden space-y-3">
+                {% csrf_token %}
+                <input name="username" type="text" required placeholder="Username" class="w-full rounded-xl border border-white/10 bg-zinc-900/80 px-4 py-3 text-sm text-white outline-none transition focus:border-sky-400">
+                <input name="password" type="password" required placeholder="Password" class="w-full rounded-xl border border-white/10 bg-zinc-900/80 px-4 py-3 text-sm text-white outline-none transition focus:border-sky-400">
+                <button type="submit" class="w-full rounded-full border border-sky-400/30 bg-sky-400/10 px-4 py-3 text-sm font-semibold text-sky-200 transition hover:bg-sky-400/20">
+                    Log in
+                </button>
+            </form>
+        </section>
+        <script>
+            const signupTabBtn = document.getElementById('signupTabBtn');
+            const loginTabBtn = document.getElementById('loginTabBtn');
+            const signupForm = document.getElementById('signupForm');
+            const loginForm = document.getElementById('loginForm');
+
+            function setAuthTab(tabName) {
+                const isSignup = tabName === 'signup';
+                signupForm.classList.toggle('hidden', !isSignup);
+                loginForm.classList.toggle('hidden', isSignup);
+
+                signupTabBtn.className = isSignup
+                    ? 'auth-tab-btn w-1/2 rounded-lg px-4 py-2 text-sm font-semibold transition bg-rose-400 text-zinc-950'
+                    : 'auth-tab-btn w-1/2 rounded-lg px-4 py-2 text-sm font-semibold transition text-zinc-300 hover:bg-white/5';
+                loginTabBtn.className = !isSignup
+                    ? 'auth-tab-btn w-1/2 rounded-lg px-4 py-2 text-sm font-semibold transition bg-sky-400/20 text-sky-200'
+                    : 'auth-tab-btn w-1/2 rounded-lg px-4 py-2 text-sm font-semibold transition text-zinc-300 hover:bg-white/5';
+            }
+
+            signupTabBtn.addEventListener('click', () => setAuthTab('signup'));
+            loginTabBtn.addEventListener('click', () => setAuthTab('login'));
+            setAuthTab('signup');
+        </script>
+        {% endif %}
+
+        {% if user.is_authenticated %}
+        <section class="mt-14 rounded-[2rem] border border-white/10 bg-white/[0.03] p-5 shadow-[0_24px_100px_rgba(0,0,0,0.35)] backdrop-blur">
+            <div class="mb-6 flex items-center justify-between gap-4">
+                <div>
+                    <h2 class="text-3xl font-bold text-white">After upload</h2>
+                    <p class="mt-2 text-sm text-zinc-400">Select any thumbnail to show it in the preview panel.</p>
+                </div>
+                <div class="flex items-center gap-3">
+                    <div id="updatedImageActions" class="flex items-center gap-2 {% if updated_images_count == 0 %}hidden{% endif %}">
+                        <a
+                            href="{% url 'download_all_updated_images' %}"
+                            class="inline-flex items-center rounded-full border border-sky-400/30 bg-sky-400/10 px-4 py-2 text-sm font-semibold text-sky-200 transition hover:bg-sky-400/20"
+                        >
+                            Download Edited
+                        </a>
+                        <form id="deleteUpdatedForm" method="post" action="{% url 'delete_all_updated_images' %}">
+                            {% csrf_token %}
+                            <button
+                                id="openDeleteUpdatedModalBtn"
+                                type="button"
+                                class="inline-flex items-center rounded-full border border-rose-400/30 bg-rose-500/10 px-4 py-2 text-sm font-semibold text-rose-200 transition hover:bg-rose-500/20"
+                            >
+                                Delete Edited
+                            </button>
+                        </form>
+                    </div>
+                    <div class="rounded-2xl border border-white/10 bg-black/20 px-4 py-3 text-right">
+                        <p class="text-xs uppercase tracking-[0.3em] text-zinc-500">Saved</p>
+                        <p id="imageCount" class="mt-1 text-2xl font-black text-white">{{ images|length }}</p>
+                    </div>
+                </div>
+            </div>
+
+            <div class="grid gap-6 lg:grid-cols-[140px_minmax(0,1fr)]">
+                <div id="imageList" class="flex max-h-[560px] flex-row gap-4 overflow-x-auto pb-2 lg:flex-col lg:overflow-y-auto lg:overflow-x-hidden">
+                    {% for image in images %}
+                        <article
+                            class="image-card group relative shrink-0"
+                            data-id="{{ image.id }}"
+                            data-url="{{ image.image.url }}"
+                            data-name="{{ image.original_name }}"
+                            data-edited="{% if image.is_edited %}true{% else %}false{% endif %}"
+                        >
+                            <button
+                                type="button"
+                                class="image-item overflow-hidden rounded-[1.5rem] border border-white/10 bg-zinc-900/80 transition hover:border-white/30 hover:bg-zinc-900 {% if forloop.first %}ring-2 ring-rose-300 border-rose-300/50{% endif %}"
+                                data-id="{{ image.id }}"
+                                data-url="{{ image.image.url }}"
+                                data-name="{{ image.original_name }}"
+                                data-edited="{% if image.is_edited %}true{% else %}false{% endif %}"
+                                aria-label="Preview {{ image.original_name }}"
+                            >
+                                <img src="{{ image.image.url }}" alt="{{ image.original_name }}" class="h-[96px] w-[96px] object-cover lg:h-[108px] lg:w-[108px]">
+                            </button>
+                            <button
+                                type="button"
+                                class="delete-image absolute -right-2 -top-2 flex h-8 w-8 items-center justify-center rounded-full border border-white/15 bg-black/80 text-lg leading-none text-white shadow-lg transition hover:border-rose-300 hover:text-rose-300"
+                                data-id="{{ image.id }}"
+                                aria-label="Delete {{ image.original_name }}"
+                            >
+                                x
+                            </button>
+                        </article>
+                    {% endfor %}
+                </div>
+
+                <div class="overflow-hidden rounded-[1.75rem] border border-white/10 bg-zinc-950/80">
+                    <div class="flex items-center justify-between border-b border-white/10 px-5 py-4">
+                        <div>
+                            <p class="text-xs uppercase tracking-[0.3em] text-zinc-500">Preview</p>
+                            <p id="previewTitle" class="mt-1 text-base font-semibold text-white">
+                                {% if images %}{{ images.0.original_name }}{% else %}No image selected{% endif %}
+                            </p>
+                        </div>
+                        <div class="flex items-center gap-2">
+                            <button id="downloadBtn" type="button" class="hidden rounded-full border border-sky-400/30 bg-sky-400/10 px-4 py-2 text-sm font-semibold text-sky-200 transition hover:bg-sky-400/20 disabled:cursor-not-allowed disabled:border-white/10 disabled:bg-zinc-800 disabled:text-zinc-500">
+                                Download image
+                            </button>
+                            <button id="clearPointsBtn" type="button" class="rounded-full border border-white/10 px-4 py-2 text-sm text-zinc-300 transition hover:bg-white/10">
+                                Restore image
+                            </button>
+                            <button id="blurBtn" type="button" class="rounded-full bg-rose-400 px-4 py-2 text-sm font-semibold text-zinc-950 transition hover:bg-rose-300 disabled:cursor-not-allowed disabled:bg-zinc-700 disabled:text-zinc-400">
+                                Blur area
+                            </button>
+                        </div>
+                    </div>
+
+                    <div class="flex min-h-[320px] items-center justify-center bg-[linear-gradient(135deg,_rgba(24,24,27,1),_rgba(39,39,42,1))] p-5 sm:min-h-[420px]">
+                    {% if images %}
+                        <div id="editorFrame" class="relative flex max-h-[480px] max-w-full items-center justify-center overflow-hidden rounded-2xl shadow-[0_20px_60px_rgba(0,0,0,0.45)]"></div>
+                    {% else %}
+                        <p id="emptyPreview" class="text-xl text-zinc-400">No image selected</p>
+                        <div id="editorFrame" class="hidden relative flex max-h-[480px] max-w-full items-center justify-center overflow-hidden rounded-2xl shadow-[0_20px_60px_rgba(0,0,0,0.45)]"></div>
+                    {% endif %}
+                    </div>
+                </div>
+            </div>
+        </section>
+        <div
+            id="deleteUpdatedModal"
+            class="fixed inset-0 z-50 hidden items-center justify-center bg-black/70 px-4"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="deleteUpdatedModalTitle"
+        >
+            <div class="w-full max-w-md rounded-2xl border border-white/10 bg-zinc-950 p-6 shadow-2xl">
+                <h3 id="deleteUpdatedModalTitle" class="text-xl font-bold text-white">Delete edited images?</h3>
+                <p class="mt-3 text-sm text-zinc-400">
+                    This will remove all edited images from your gallery. This action cannot be undone.
+                </p>
+                <div class="mt-6 flex justify-end gap-2">
+                    <button
+                        id="cancelDeleteUpdatedModalBtn"
+                        type="button"
+                        class="rounded-full border border-white/15 px-4 py-2 text-sm text-zinc-300 transition hover:bg-white/10"
+                    >
+                        Cancel
+                    </button>
+                    <button
+                        id="confirmDeleteUpdatedModalBtn"
+                        type="button"
+                        class="rounded-full border border-rose-400/30 bg-rose-500/10 px-4 py-2 text-sm font-semibold text-rose-200 transition hover:bg-rose-500/20"
+                    >
+                        Delete
+                    </button>
+                </div>
+            </div>
+        </div>
+        {% endif %}
+    </main>
+
+    {% if user.is_authenticated %}
+    <script>
+        const imageUpload = document.getElementById('imageUpload');
+        const statusText = document.getElementById('statusText');
+        const imageList = document.getElementById('imageList');
+        const previewTitle = document.getElementById('previewTitle');
+        const imageCount = document.getElementById('imageCount');
+        const blurBtn = document.getElementById('blurBtn');
+        const clearPointsBtn = document.getElementById('clearPointsBtn');
+        const downloadBtn = document.getElementById('downloadBtn');
+        const updatedImageActions = document.getElementById('updatedImageActions');
+        const deleteUpdatedForm = document.getElementById('deleteUpdatedForm');
+        const openDeleteUpdatedModalBtn = document.getElementById('openDeleteUpdatedModalBtn');
+        const deleteUpdatedModal = document.getElementById('deleteUpdatedModal');
+        const cancelDeleteUpdatedModalBtn = document.getElementById('cancelDeleteUpdatedModalBtn');
+        const confirmDeleteUpdatedModalBtn = document.getElementById('confirmDeleteUpdatedModalBtn');
+        const editorFrame = document.getElementById('editorFrame');
+        let emptyPreview = document.getElementById('emptyPreview');
+        let previewCanvas = null;
+        let overlaySvg = null;
+        let currentImageButton = null;
+        let displaySize = { width: 0, height: 0 };
+        let selectedPoints = [];
+        let currentImageState = {
+            id: null,
+            name: '',
+            url: '',
+            image: null,
+            isEdited: false,
+        };
+
+        function getCsrfToken() {
+            const tokenFromMeta = document.querySelector('meta[name="csrf-token"]')?.getAttribute('content');
+            if (tokenFromMeta && tokenFromMeta !== 'NOTPROVIDED') {
+                return tokenFromMeta;
+            }
+
+            const cookie = document.cookie
+                .split('; ')
+                .find((row) => row.startsWith('csrftoken='));
+
+            return cookie ? decodeURIComponent(cookie.split('=')[1]) : '';
+        }
+
+        async function parseResponsePayload(response) {
+            const contentType = response.headers.get('content-type') || '';
+            if (contentType.includes('application/json')) {
+                return response.json();
+            }
+
+            const text = await response.text();
+            const parser = new DOMParser();
+            const htmlDoc = parser.parseFromString(text, 'text/html');
+            const title = htmlDoc.querySelector('title')?.textContent?.trim();
+            const bodyText = htmlDoc.body?.textContent?.replace(/\s+/g, ' ').trim();
+
+            return {
+                error: title || bodyText || 'Unexpected non-JSON response from server.',
+            };
+        }
+
+        async function requestJson(url, options = {}) {
+            const response = await fetch(url, {
+                credentials: 'same-origin',
+                ...options,
+            });
+            const data = await parseResponsePayload(response);
+            return { response, data };
+        }
+
+        function setEditorEnabled(enabled) {
+            blurBtn.disabled = !enabled;
+            clearPointsBtn.disabled = !enabled;
+            downloadBtn.disabled = !enabled || !currentImageState.isEdited;
+            downloadBtn.classList.toggle('hidden', !enabled || !currentImageState.isEdited);
+        }
+
+        function refreshUpdatedImageActionsVisibility() {
+            const hasUpdatedImage = Boolean(document.querySelector('.image-item[data-edited="true"]'));
+            updatedImageActions.classList.toggle('hidden', !hasUpdatedImage);
+        }
+
+        function openDeleteUpdatedModal() {
+            deleteUpdatedModal.classList.remove('hidden');
+            deleteUpdatedModal.classList.add('flex');
+        }
+
+        function closeDeleteUpdatedModal() {
+            deleteUpdatedModal.classList.add('hidden');
+            deleteUpdatedModal.classList.remove('flex');
+        }
+
+        function resetSelectionPoints() {
+            selectedPoints = [];
+            drawOverlay();
+        }
+
+        function buildEditorSurface() {
+            editorFrame.innerHTML = '';
+
+            previewCanvas = document.createElement('canvas');
+            previewCanvas.id = 'previewCanvas';
+            previewCanvas.className = 'block max-w-full cursor-crosshair rounded-2xl';
+
+            overlaySvg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+            overlaySvg.setAttribute('class', 'pointer-events-none absolute inset-0');
+
+            editorFrame.appendChild(previewCanvas);
+            editorFrame.appendChild(overlaySvg);
+        }
+
+        function drawOverlay() {
+            if (!overlaySvg) {
+                return;
+            }
+
+            overlaySvg.setAttribute('viewBox', `0 0 ${displaySize.width} ${displaySize.height}`);
+            overlaySvg.innerHTML = '';
+
+            if (selectedPoints.length >= 2) {
+                const polyline = document.createElementNS('http://www.w3.org/2000/svg', 'polyline');
+                polyline.setAttribute('points', selectedPoints.map((point) => `${point.x},${point.y}`).join(' '));
+                polyline.setAttribute('fill', 'none');
+                polyline.setAttribute('stroke', '#fb7185');
+                polyline.setAttribute('stroke-width', '2');
+                overlaySvg.appendChild(polyline);
+            }
+
+            if (selectedPoints.length >= 3) {
+                const polygon = document.createElementNS('http://www.w3.org/2000/svg', 'polygon');
+                polygon.setAttribute('points', selectedPoints.map((point) => `${point.x},${point.y}`).join(' '));
+                polygon.setAttribute('fill', 'rgba(251, 113, 133, 0.18)');
+                polygon.setAttribute('stroke', '#fb7185');
+                polygon.setAttribute('stroke-width', '2');
+                overlaySvg.appendChild(polygon);
+            }
+
+            selectedPoints.forEach((point) => {
+                const dot = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+                dot.setAttribute('cx', point.x);
+                dot.setAttribute('cy', point.y);
+                dot.setAttribute('r', '5');
+                dot.setAttribute('fill', '#ffffff');
+                dot.setAttribute('stroke', '#fb7185');
+                dot.setAttribute('stroke-width', '2');
+                overlaySvg.appendChild(dot);
+            });
+        }
+
+        function fitImageSize(width, height) {
+            const maxWidth = Math.min(editorFrame.parentElement.clientWidth - 24, 860);
+            const maxHeight = window.innerWidth >= 640 ? 480 : 340;
+            const scale = Math.min(maxWidth / width, maxHeight / height, 1);
+
+            return {
+                width: Math.max(1, Math.round(width * scale)),
+                height: Math.max(1, Math.round(height * scale)),
+            };
+        }
+
+        function renderPreviewCanvas() {
+            if (!previewCanvas || !currentImageState.image) {
+                return;
+            }
+
+            const ctx = previewCanvas.getContext('2d');
+            previewCanvas.width = displaySize.width;
+            previewCanvas.height = displaySize.height;
+            previewCanvas.style.width = `${displaySize.width}px`;
+            previewCanvas.style.height = `${displaySize.height}px`;
+            overlaySvg.style.width = `${displaySize.width}px`;
+            overlaySvg.style.height = `${displaySize.height}px`;
+            ctx.clearRect(0, 0, displaySize.width, displaySize.height);
+            ctx.drawImage(currentImageState.image, 0, 0, displaySize.width, displaySize.height);
+            drawOverlay();
+        }
+
+        function registerCanvasPointing() {
+            previewCanvas.onclick = (event) => {
+                if (!currentImageState.image) {
+                    return;
+                }
+
+                const rect = previewCanvas.getBoundingClientRect();
+                const x = event.clientX - rect.left;
+                const y = event.clientY - rect.top;
+                selectedPoints.push({
+                    x: Number(x.toFixed(2)),
+                    y: Number(y.toFixed(2)),
+                });
+                drawOverlay();
+            };
+        }
+
+        function loadImageIntoEditor(url, name, imageId) {
+            const image = new Image();
+            image.onload = () => {
+                currentImageState = {
+                    id: imageId,
+                    name,
+                    url,
+                    image,
+                    isEdited: currentImageState.isEdited,
+                };
+                editorFrame.classList.remove('hidden');
+                buildEditorSurface();
+                displaySize = fitImageSize(image.naturalWidth, image.naturalHeight);
+                registerCanvasPointing();
+                resetSelectionPoints();
+                renderPreviewCanvas();
+                setEditorEnabled(true);
+            };
+            image.src = `${url}${url.includes('?') ? '&' : '?'}v=${Date.now()}`;
+        }
+
+        function selectImage(button) {
+            document.querySelectorAll('.image-item').forEach((item) => {
+                item.classList.remove('ring-2', 'ring-rose-300', 'border-rose-300/50');
+            });
+
+            button.classList.add('ring-2', 'ring-rose-300', 'border-rose-300/50');
+            previewTitle.textContent = button.dataset.name;
+            currentImageButton = button;
+            currentImageState.isEdited = button.dataset.edited === 'true';
+            loadImageIntoEditor(button.dataset.url, button.dataset.name, button.dataset.id);
+
+            if (emptyPreview) {
+                emptyPreview.remove();
+                emptyPreview = null;
+            }
+        }
+
+        function attachImageItemEvents() {
+            document.querySelectorAll('.image-item').forEach((button) => {
+                button.onclick = () => selectImage(button);
+            });
+        }
+
+        function attachDeleteEvents() {
+            document.querySelectorAll('.delete-image').forEach((button) => {
+                button.onclick = async (event) => {
+                    event.stopPropagation();
+                    await deleteImage(button.dataset.id);
+                };
+            });
+        }
+
+        function createImageItem(image) {
+            const card = document.createElement('article');
+            card.className = 'image-card group relative shrink-0';
+            card.dataset.id = image.id;
+            card.dataset.url = image.url;
+            card.dataset.name = image.name;
+            card.dataset.edited = image.is_edited ? 'true' : 'false';
+            card.innerHTML = `
+                <button
+                    type="button"
+                    class="image-item overflow-hidden rounded-[1.5rem] border border-white/10 bg-zinc-900/80 transition hover:border-white/30 hover:bg-zinc-900"
+                    data-id="${image.id}"
+                    data-url="${image.url}"
+                    data-name="${image.name}"
+                    data-edited="${image.is_edited ? 'true' : 'false'}"
+                    aria-label="Preview ${image.name}"
+                >
+                    <img src="${image.url}" alt="${image.name}" class="h-[96px] w-[96px] object-cover lg:h-[108px] lg:w-[108px]">
+                </button>
+                <button
+                    type="button"
+                    class="delete-image absolute -right-2 -top-2 flex h-8 w-8 items-center justify-center rounded-full border border-white/15 bg-black/80 text-lg leading-none text-white shadow-lg transition hover:border-rose-300 hover:text-rose-300"
+                    data-id="${image.id}"
+                    aria-label="Delete ${image.name}"
+                >
+                    x
+                </button>
+            `;
+            return card;
+        }
+
+        function refreshSelectionAfterDelete() {
+            const remainingItems = document.querySelectorAll('.image-item');
+            imageCount.textContent = String(remainingItems.length);
+
+            if (!remainingItems.length) {
+                previewTitle.textContent = 'No image selected';
+                currentImageButton = null;
+                currentImageState = {
+                    id: null,
+                    name: '',
+                    url: '',
+                    image: null,
+                    isEdited: false,
+                };
+                editorFrame.classList.add('hidden');
+                editorFrame.innerHTML = '';
+                setEditorEnabled(false);
+                resetSelectionPoints();
+
+                if (!emptyPreview) {
+                    emptyPreview = document.createElement('p');
+                    emptyPreview.id = 'emptyPreview';
+                    emptyPreview.className = 'text-xl text-zinc-400';
+                    emptyPreview.textContent = 'No image selected';
+                    editorFrame.parentElement.appendChild(emptyPreview);
+                }
+                return;
+            }
+
+            const selected = document.querySelector('.image-item.ring-2');
+            if (!selected) {
+                selectImage(remainingItems[0]);
+            }
+        }
+
+        async function deleteImage(imageId) {
+            statusText.textContent = 'Deleting image...';
+
+            try {
+                const { response, data } = await requestJson(`/delete/${imageId}/`, {
+                    method: 'POST',
+                    headers: {
+                        'X-CSRFToken': getCsrfToken(),
+                    },
+                });
+
+                if (!response.ok) {
+                    throw new Error(data.error || 'Delete failed.');
+                }
+
+                const card = document.querySelector(`.image-card[data-id="${data.deleted_id}"]`);
+                if (card) {
+                    card.remove();
+                }
+
+                refreshSelectionAfterDelete();
+                refreshUpdatedImageActionsVisibility();
+                statusText.textContent = 'Image deleted successfully.';
+            } catch (error) {
+                statusText.textContent = error.message;
+            }
+        }
+
+        async function blurSelectedArea() {
+            if (!currentImageState.image || selectedPoints.length < 3) {
+                statusText.textContent = 'Select at least 3 points to make a blur area.';
+                return;
+            }
+
+            statusText.textContent = 'Blurring selected area...';
+
+            const widthScale = currentImageState.image.naturalWidth / displaySize.width;
+            const heightScale = currentImageState.image.naturalHeight / displaySize.height;
+            const polygon = selectedPoints.map((point) => ({
+                x: point.x * widthScale,
+                y: point.y * heightScale,
+            }));
+
+            try {
+                const { response, data } = await requestJson(`/edit/${currentImageState.id}/`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'X-CSRFToken': getCsrfToken(),
+                    },
+                    body: JSON.stringify({ points: polygon }),
+                });
+
+                if (!response.ok) {
+                    throw new Error(data.error || 'Blur failed.');
+                }
+
+                resetSelectionPoints();
+                currentImageButton.dataset.url = data.url;
+                currentImageButton.dataset.edited = data.is_edited ? 'true' : 'false';
+                currentImageButton.querySelector('img').src = `${data.url}?v=${Date.now()}`;
+                currentImageButton.closest('.image-card').dataset.url = data.url;
+                currentImageButton.closest('.image-card').dataset.edited = data.is_edited ? 'true' : 'false';
+                currentImageState.isEdited = data.is_edited;
+                loadImageIntoEditor(data.url, currentImageState.name, currentImageState.id);
+                refreshUpdatedImageActionsVisibility();
+                statusText.textContent = 'Blur applied and saved.';
+            } catch (error) {
+                statusText.textContent = error.message;
+            }
+        }
+
+        async function restoreOriginalImage() {
+            if (!currentImageState.id) {
+                return;
+            }
+
+            statusText.textContent = 'Restoring original image...';
+
+            try {
+                const { response, data } = await requestJson(`/restore/${currentImageState.id}/`, {
+                    method: 'POST',
+                    headers: {
+                        'X-CSRFToken': getCsrfToken(),
+                    },
+                });
+
+                if (!response.ok) {
+                    throw new Error(data.error || 'Restore failed.');
+                }
+
+                resetSelectionPoints();
+                currentImageButton.dataset.url = data.url;
+                currentImageButton.dataset.edited = data.is_edited ? 'true' : 'false';
+                currentImageButton.querySelector('img').src = `${data.url}?v=${Date.now()}`;
+                currentImageButton.closest('.image-card').dataset.url = data.url;
+                currentImageButton.closest('.image-card').dataset.edited = data.is_edited ? 'true' : 'false';
+                currentImageState.isEdited = data.is_edited;
+                loadImageIntoEditor(data.url, currentImageState.name, currentImageState.id);
+                refreshUpdatedImageActionsVisibility();
+                statusText.textContent = 'Original image restored.';
+            } catch (error) {
+                statusText.textContent = error.message;
+            }
+        }
+
+        function downloadCurrentImage() {
+            if (!currentImageState.url) {
+                return;
+            }
+
+            const link = document.createElement('a');
+            link.href = `${currentImageState.url}${currentImageState.url.includes('?') ? '&' : '?'}download=${Date.now()}`;
+            link.download = currentImageState.name || 'blurred-image';
+            document.body.appendChild(link);
+            link.click();
+            link.remove();
+        }
+
+        async function uploadSelectedImages(files) {
+            const formData = new FormData();
+            Array.from(files).forEach((file) => formData.append('images', file));
+
+            statusText.textContent = 'Uploading images...';
+
+            try {
+                const { response, data } = await requestJson('{% url "upload_images" %}', {
+                    method: 'POST',
+                    headers: {
+                        'X-CSRFToken': getCsrfToken(),
+                    },
+                    body: formData,
+                });
+
+                if (!response.ok) {
+                    throw new Error(data.error || 'Upload failed.');
+                }
+
+                data.images.forEach((image) => {
+                    const item = createImageItem(image);
+                    imageList.appendChild(item);
+                });
+
+                attachImageItemEvents();
+                attachDeleteEvents();
+
+                const items = imageList.querySelectorAll('.image-item');
+                const newestItem = items[items.length - 1];
+                if (newestItem) {
+                    selectImage(newestItem);
+                }
+
+                imageCount.textContent = String(document.querySelectorAll('.image-item').length);
+                statusText.textContent = `${data.images.length} image(s) saved successfully.`;
+                imageUpload.value = '';
+            } catch (error) {
+                statusText.textContent = error.message;
+            }
+        }
+
+        imageUpload.addEventListener('change', (event) => {
+            const { files } = event.target;
+            if (!files.length) {
+                return;
+            }
+
+            uploadSelectedImages(files);
+        });
+
+        clearPointsBtn.addEventListener('click', restoreOriginalImage);
+        blurBtn.addEventListener('click', blurSelectedArea);
+        downloadBtn.addEventListener('click', downloadCurrentImage);
+        openDeleteUpdatedModalBtn.addEventListener('click', openDeleteUpdatedModal);
+        cancelDeleteUpdatedModalBtn.addEventListener('click', closeDeleteUpdatedModal);
+        confirmDeleteUpdatedModalBtn.addEventListener('click', () => deleteUpdatedForm.submit());
+        deleteUpdatedModal.addEventListener('click', (event) => {
+            if (event.target === deleteUpdatedModal) {
+                closeDeleteUpdatedModal();
+            }
+        });
+        document.addEventListener('keydown', (event) => {
+            if (event.key === 'Escape' && !deleteUpdatedModal.classList.contains('hidden')) {
+                closeDeleteUpdatedModal();
+            }
+        });
+        window.addEventListener('resize', () => {
+            if (!currentImageState.image || !previewCanvas) {
+                return;
+            }
+            displaySize = fitImageSize(currentImageState.image.naturalWidth, currentImageState.image.naturalHeight);
+            renderPreviewCanvas();
+        });
+
+        setEditorEnabled({% if images %}true{% else %}false{% endif %});
+        attachImageItemEvents();
+        attachDeleteEvents();
+        refreshUpdatedImageActionsVisibility();
+        const initialSelectedImage = document.querySelector('.image-item.ring-2') || document.querySelector('.image-item');
+        if (initialSelectedImage) {
+            selectImage(initialSelectedImage);
+        }
+    </script>
+    {% endif %}
+</body>
+</html>
