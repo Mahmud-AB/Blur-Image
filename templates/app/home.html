@@ -27,16 +27,48 @@
                 <p class="text-sm uppercase tracking-[0.35em] text-rose-300">Image Gallery</p>
                 <h1 class="mt-3 text-4xl font-black text-white sm:text-5xl">Upload and preview images</h1>
                 <p class="mt-3 max-w-2xl text-sm leading-7 text-zinc-400">
-                    Choose one or more images. They are saved immediately, then shown as thumbnails on the left with a large preview on the right.
+                    Choose one or more images, or a whole folder. Images are saved immediately, then shown as thumbnails on the left with a large preview on the right.
                 </p>
             </div>
 
-            <label for="imageUpload" class="group flex min-h-[120px] cursor-pointer items-center justify-center rounded-[2rem] border border-rose-500/60 bg-zinc-900/80 px-6 text-xl font-semibold text-rose-300 shadow-[0_20px_80px_rgba(0,0,0,0.35)] transition hover:border-rose-400 hover:bg-zinc-900">
-                <span class="rounded-full border border-rose-400/40 bg-rose-500/10 px-6 py-3 transition group-hover:bg-rose-500/20">
-                    Upload images
-                </span>
-                <input id="imageUpload" type="file" accept="image/*" multiple class="hidden">
-            </label>
+            <div class="flex flex-col gap-4 sm:flex-row sm:flex-wrap sm:items-stretch">
+                <label for="imageUpload" class="group flex min-h-[120px] flex-1 cursor-pointer items-center justify-center rounded-[2rem] border border-rose-500/60 bg-zinc-900/80 px-6 text-xl font-semibold text-rose-300 shadow-[0_20px_80px_rgba(0,0,0,0.35)] transition hover:border-rose-400 hover:bg-zinc-900">
+                    <span class="rounded-full border border-rose-400/40 bg-rose-500/10 px-6 py-3 transition group-hover:bg-rose-500/20">
+                        Upload images
+                    </span>
+                    <input id="imageUpload" type="file" accept="image/*" multiple class="hidden">
+                </label>
+                <label for="folderUpload" class="group flex min-h-[120px] flex-1 cursor-pointer items-center justify-center rounded-[2rem] border border-sky-500/50 bg-zinc-900/80 px-6 text-xl font-semibold text-sky-200 shadow-[0_20px_80px_rgba(0,0,0,0.35)] transition hover:border-sky-400 hover:bg-zinc-900">
+                    <span class="rounded-full border border-sky-400/40 bg-sky-500/10 px-6 py-3 transition group-hover:bg-sky-500/20">
+                        Upload folder
+                    </span>
+                    <input id="folderUpload" type="file" webkitdirectory directory multiple class="hidden">
+                </label>
+            </div>
+            <div class="mt-4 flex flex-col gap-3 rounded-2xl border border-white/10 bg-black/20 px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
+                <div class="min-w-0 flex-1">
+                    <p class="text-xs uppercase tracking-[0.3em] text-zinc-500">Download location</p>
+                    <p id="downloadFolderHint" class="mt-1 text-sm text-zinc-300">
+                        Blurred images use your browser’s default download folder unless you pick one below.
+                    </p>
+                </div>
+                <div class="flex shrink-0 flex-wrap gap-2">
+                    <button
+                        id="chooseDownloadFolderBtn"
+                        type="button"
+                        class="rounded-full border border-emerald-400/35 bg-emerald-500/10 px-4 py-2 text-sm font-semibold text-emerald-200 transition hover:bg-emerald-500/20 disabled:cursor-not-allowed disabled:opacity-40"
+                    >
+                        Choose download folder
+                    </button>
+                    <button
+                        id="clearDownloadFolderBtn"
+                        type="button"
+                        class="hidden rounded-full border border-white/15 px-4 py-2 text-sm text-zinc-300 transition hover:bg-white/10"
+                    >
+                        Use default folder
+                    </button>
+                </div>
+            </div>
             <p id="statusText" class="mt-4 text-sm text-zinc-400">Waiting for upload.</p>
         </section>
         {% else %}
@@ -172,9 +204,6 @@
                             </p>
                         </div>
                         <div class="flex items-center gap-2">
-                            <button id="downloadBtn" type="button" class="hidden rounded-full border border-sky-400/30 bg-sky-400/10 px-4 py-2 text-sm font-semibold text-sky-200 transition hover:bg-sky-400/20 disabled:cursor-not-allowed disabled:border-white/10 disabled:bg-zinc-800 disabled:text-zinc-500">
-                                Download image
-                            </button>
                             <button id="clearPointsBtn" type="button" class="rounded-full border border-white/10 px-4 py-2 text-sm text-zinc-300 transition hover:bg-white/10">
                                 Restore image
                             </button>
@@ -230,6 +259,8 @@
 
     {% if user.is_authenticated %}
     <script>
+        const CURRENT_USER_ID = {{ user.id }};
+
         const imageUpload = document.getElementById('imageUpload');
         const statusText = document.getElementById('statusText');
         const imageList = document.getElementById('imageList');
@@ -237,7 +268,10 @@
         const imageCount = document.getElementById('imageCount');
         const blurBtn = document.getElementById('blurBtn');
         const clearPointsBtn = document.getElementById('clearPointsBtn');
-        const downloadBtn = document.getElementById('downloadBtn');
+        const folderUpload = document.getElementById('folderUpload');
+        const downloadFolderHint = document.getElementById('downloadFolderHint');
+        const chooseDownloadFolderBtn = document.getElementById('chooseDownloadFolderBtn');
+        const clearDownloadFolderBtn = document.getElementById('clearDownloadFolderBtn');
         const updatedImageActions = document.getElementById('updatedImageActions');
         const deleteUpdatedForm = document.getElementById('deleteUpdatedForm');
         const openDeleteUpdatedModalBtn = document.getElementById('openDeleteUpdatedModalBtn');
@@ -258,6 +292,118 @@
             image: null,
             isEdited: false,
         };
+
+        let downloadDirHandle = null;
+
+        const DOWNLOAD_FOLDER_DB = 'blur_image_download_folders';
+        const DOWNLOAD_FOLDER_DB_VERSION = 1;
+        const DOWNLOAD_FOLDER_STORE = 'handles';
+
+        function supportsDownloadFolderPicker() {
+            return typeof window.showDirectoryPicker === 'function';
+        }
+
+        function openDownloadFolderDb() {
+            return new Promise((resolve, reject) => {
+                const req = indexedDB.open(DOWNLOAD_FOLDER_DB, DOWNLOAD_FOLDER_DB_VERSION);
+                req.onerror = () => reject(req.error);
+                req.onupgradeneeded = () => {
+                    const db = req.result;
+                    if (!db.objectStoreNames.contains(DOWNLOAD_FOLDER_STORE)) {
+                        db.createObjectStore(DOWNLOAD_FOLDER_STORE);
+                    }
+                };
+                req.onsuccess = () => resolve(req.result);
+            });
+        }
+
+        async function persistDownloadDirHandle(handle) {
+            if (!CURRENT_USER_ID || !handle) {
+                return;
+            }
+            try {
+                const db = await openDownloadFolderDb();
+                await new Promise((resolve, reject) => {
+                    const tx = db.transaction(DOWNLOAD_FOLDER_STORE, 'readwrite');
+                    tx.objectStore(DOWNLOAD_FOLDER_STORE).put(handle, CURRENT_USER_ID);
+                    tx.oncomplete = () => resolve();
+                    tx.onerror = () => reject(tx.error);
+                });
+                db.close();
+            } catch (e) {
+                console.warn('Could not persist download folder for this user', e);
+            }
+        }
+
+        async function loadPersistedDownloadDirHandle() {
+            if (!CURRENT_USER_ID) {
+                return null;
+            }
+            try {
+                const db = await openDownloadFolderDb();
+                const handle = await new Promise((resolve, reject) => {
+                    const tx = db.transaction(DOWNLOAD_FOLDER_STORE, 'readonly');
+                    const r = tx.objectStore(DOWNLOAD_FOLDER_STORE).get(CURRENT_USER_ID);
+                    r.onsuccess = () => resolve(r.result);
+                    r.onerror = () => reject(r.error);
+                });
+                db.close();
+                return handle && typeof handle.getFileHandle === 'function' ? handle : null;
+            } catch (e) {
+                console.warn('Could not load saved download folder for this user', e);
+                return null;
+            }
+        }
+
+        async function clearPersistedDownloadDirHandle() {
+            if (!CURRENT_USER_ID) {
+                return;
+            }
+            try {
+                const db = await openDownloadFolderDb();
+                await new Promise((resolve, reject) => {
+                    const tx = db.transaction(DOWNLOAD_FOLDER_STORE, 'readwrite');
+                    tx.objectStore(DOWNLOAD_FOLDER_STORE).delete(CURRENT_USER_ID);
+                    tx.oncomplete = () => resolve();
+                    tx.onerror = () => reject(tx.error);
+                });
+                db.close();
+            } catch (e) {
+                console.warn(e);
+            }
+        }
+
+        async function ensureDirectoryWritable(handle) {
+            if (!handle || typeof handle.queryPermission !== 'function') {
+                return false;
+            }
+            const opts = { mode: 'readwrite' };
+            let state = await handle.queryPermission(opts);
+            if (state === 'granted') {
+                return true;
+            }
+            if (state === 'prompt' && typeof handle.requestPermission === 'function') {
+                state = await handle.requestPermission(opts);
+            }
+            return state === 'granted';
+        }
+
+        function updateDownloadFolderUI() {
+            if (!downloadFolderHint || !clearDownloadFolderBtn) {
+                return;
+            }
+            if (downloadDirHandle) {
+                downloadFolderHint.textContent =
+                    'Blurred images will be saved into your folder for this account: ' +
+                    downloadDirHandle.name +
+                    '. (Each signed-in user can choose a different folder on this browser.)';
+                clearDownloadFolderBtn.classList.remove('hidden');
+            } else {
+                downloadFolderHint.textContent =
+                    'Blurred images use your browser’s default download folder unless you pick one above. The folder is remembered per account on this device.';
+                clearDownloadFolderBtn.classList.add('hidden');
+            }
+        }
 
         function getCsrfToken() {
             const tokenFromMeta = document.querySelector('meta[name="csrf-token"]')?.getAttribute('content');
@@ -301,8 +447,6 @@
         function setEditorEnabled(enabled) {
             blurBtn.disabled = !enabled;
             clearPointsBtn.disabled = !enabled;
-            downloadBtn.disabled = !enabled || !currentImageState.isEdited;
-            downloadBtn.classList.toggle('hidden', !enabled || !currentImageState.isEdited);
         }
 
         function refreshUpdatedImageActionsVisibility() {
@@ -470,7 +614,11 @@
             document.querySelectorAll('.delete-image').forEach((button) => {
                 button.onclick = async (event) => {
                     event.stopPropagation();
-                    await deleteImage(button.dataset.id);
+                    try {
+                        await deleteImage(button.dataset.id);
+                    } catch {
+                        /* status set in deleteImage */
+                    }
                 };
             });
         }
@@ -506,7 +654,7 @@
             return card;
         }
 
-        function refreshSelectionAfterDelete() {
+        function refreshSelectionAfterDelete(preferredIndex) {
             const remainingItems = document.querySelectorAll('.image-item');
             imageCount.textContent = String(remainingItems.length);
 
@@ -535,14 +683,27 @@
                 return;
             }
 
+            if (preferredIndex !== undefined && preferredIndex !== null) {
+                const nextCards = imageList.querySelectorAll('.image-card');
+                const pick = Math.min(Math.max(0, preferredIndex), nextCards.length - 1);
+                const nextBtn = nextCards[pick].querySelector('.image-item');
+                if (nextBtn) {
+                    selectImage(nextBtn);
+                }
+                return;
+            }
+
             const selected = document.querySelector('.image-item.ring-2');
             if (!selected) {
                 selectImage(remainingItems[0]);
             }
         }
 
-        async function deleteImage(imageId) {
-            statusText.textContent = 'Deleting image...';
+        async function deleteImage(imageId, options = {}) {
+            const { preferredIndex, finalStatus, skipLoading, rethrow } = options;
+            if (!skipLoading) {
+                statusText.textContent = 'Deleting image...';
+            }
 
             try {
                 const { response, data } = await requestJson(`/delete/${imageId}/`, {
@@ -561,11 +722,14 @@
                     card.remove();
                 }
 
-                refreshSelectionAfterDelete();
+                refreshSelectionAfterDelete(preferredIndex);
                 refreshUpdatedImageActionsVisibility();
-                statusText.textContent = 'Image deleted successfully.';
+                statusText.textContent = finalStatus ?? 'Image deleted successfully.';
             } catch (error) {
                 statusText.textContent = error.message;
+                if (rethrow) {
+                    throw error;
+                }
             }
         }
 
@@ -599,15 +763,21 @@
                 }
 
                 resetSelectionPoints();
-                currentImageButton.dataset.url = data.url;
-                currentImageButton.dataset.edited = data.is_edited ? 'true' : 'false';
-                currentImageButton.querySelector('img').src = `${data.url}?v=${Date.now()}`;
-                currentImageButton.closest('.image-card').dataset.url = data.url;
-                currentImageButton.closest('.image-card').dataset.edited = data.is_edited ? 'true' : 'false';
-                currentImageState.isEdited = data.is_edited;
-                loadImageIntoEditor(data.url, currentImageState.name, currentImageState.id);
-                refreshUpdatedImageActionsVisibility();
-                statusText.textContent = 'Blur applied and saved.';
+
+                const card = currentImageButton.closest('.image-card');
+                const cardsBefore = Array.from(imageList.querySelectorAll('.image-card'));
+                const cardIndex = card ? cardsBefore.indexOf(card) : -1;
+                const blurId = currentImageState.id;
+
+                await downloadImageByUrl(data.url, data.name);
+
+                statusText.textContent = 'Removing image and loading next…';
+                await deleteImage(blurId, {
+                    preferredIndex: cardIndex >= 0 ? cardIndex : undefined,
+                    skipLoading: true,
+                    finalStatus: 'Blurred image downloaded. Showing next image.',
+                    rethrow: true,
+                });
             } catch (error) {
                 statusText.textContent = error.message;
             }
@@ -647,22 +817,71 @@
             }
         }
 
-        function downloadCurrentImage() {
-            if (!currentImageState.url) {
+        function sanitizeDownloadFileName(name) {
+            const base = (name || 'blurred-image').split(/[/\\]/).pop() || 'blurred-image';
+            return base.replace(/[<>:"|?*]/g, '_').trim() || 'blurred-image';
+        }
+
+        async function downloadImageByUrl(url, filename) {
+            if (!url) {
                 return;
             }
 
+            const safeName = sanitizeDownloadFileName(filename);
+
+            if (downloadDirHandle && typeof downloadDirHandle.getFileHandle === 'function') {
+                const canWrite = await ensureDirectoryWritable(downloadDirHandle);
+                if (canWrite) {
+                    try {
+                        const fetchUrl = url.startsWith('http') ? url : new URL(url, window.location.origin).href;
+                        const response = await fetch(fetchUrl, { credentials: 'same-origin' });
+                        if (!response.ok) {
+                            throw new Error('Could not read image for saving.');
+                        }
+                        const blob = await response.blob();
+                        const fileHandle = await downloadDirHandle.getFileHandle(safeName, { create: true });
+                        const writable = await fileHandle.createWritable();
+                        await writable.write(blob);
+                        await writable.close();
+                        return;
+                    } catch (err) {
+                        console.warn(err);
+                    }
+                }
+            }
+
             const link = document.createElement('a');
-            link.href = `${currentImageState.url}${currentImageState.url.includes('?') ? '&' : '?'}download=${Date.now()}`;
-            link.download = currentImageState.name || 'blurred-image';
+            const href =
+                url.startsWith('http') || url.startsWith('//')
+                    ? `${url}${url.includes('?') ? '&' : '?'}download=${Date.now()}`
+                    : `${url}${url.includes('?') ? '&' : '?'}download=${Date.now()}`;
+            link.href = href;
+            link.download = safeName;
             document.body.appendChild(link);
             link.click();
             link.remove();
         }
 
+        function isImageFile(file) {
+            if (file.type && file.type.startsWith('image/')) {
+                return true;
+            }
+            const name = (file.name || '').toLowerCase();
+            return /\.(png|jpe?g|gif|webp|bmp|svg|avif|heic|heif)$/.test(name);
+        }
+
         async function uploadSelectedImages(files) {
             const formData = new FormData();
-            Array.from(files).forEach((file) => formData.append('images', file));
+            Array.from(files).forEach((file) => {
+                const rel = file.webkitRelativePath;
+                let useName = rel && rel !== file.name ? rel.replace(/\\/g, '/') : file.name;
+                useName = useName.replace(/\//g, '_');
+                const toSend =
+                    useName !== file.name
+                        ? new File([file], useName, { type: file.type || 'application/octet-stream' })
+                        : file;
+                formData.append('images', toSend);
+            });
 
             statusText.textContent = 'Uploading images...';
 
@@ -696,6 +915,9 @@
                 imageCount.textContent = String(document.querySelectorAll('.image-item').length);
                 statusText.textContent = `${data.images.length} image(s) saved successfully.`;
                 imageUpload.value = '';
+                if (folderUpload) {
+                    folderUpload.value = '';
+                }
             } catch (error) {
                 statusText.textContent = error.message;
             }
@@ -710,9 +932,63 @@
             uploadSelectedImages(files);
         });
 
+        folderUpload.addEventListener('change', (event) => {
+            const { files } = event.target;
+            if (!files.length) {
+                return;
+            }
+
+            const imageFiles = Array.from(files).filter(isImageFile);
+            if (!imageFiles.length) {
+                statusText.textContent = 'No image files found in that folder.';
+                folderUpload.value = '';
+                return;
+            }
+
+            uploadSelectedImages(imageFiles);
+        });
+
+        async function initDownloadFolderUI() {
+            if (!supportsDownloadFolderPicker()) {
+                chooseDownloadFolderBtn.disabled = true;
+                chooseDownloadFolderBtn.title = 'Requires Chrome, Edge, or Opera.';
+                downloadFolderHint.textContent =
+                    'Blurred images use your browser’s default download folder. Choosing a fixed folder requires Chrome, Edge, or Opera.';
+                return;
+            }
+            const saved = await loadPersistedDownloadDirHandle();
+            if (saved) {
+                downloadDirHandle = saved;
+            }
+            updateDownloadFolderUI();
+        }
+
+        chooseDownloadFolderBtn.addEventListener('click', async () => {
+            if (!supportsDownloadFolderPicker()) {
+                return;
+            }
+            try {
+                downloadDirHandle = await window.showDirectoryPicker({ mode: 'readwrite' });
+                await persistDownloadDirHandle(downloadDirHandle);
+                updateDownloadFolderUI();
+                statusText.textContent =
+                    'Download folder for this account set to "' + downloadDirHandle.name + '" (saved on this browser).';
+            } catch (e) {
+                if (e.name !== 'AbortError') {
+                    statusText.textContent = e.message || 'Could not open folder.';
+                }
+            }
+        });
+
+        clearDownloadFolderBtn.addEventListener('click', async () => {
+            downloadDirHandle = null;
+            await clearPersistedDownloadDirHandle();
+            updateDownloadFolderUI();
+            statusText.textContent = 'Using default download folder again for this account.';
+        });
+
         clearPointsBtn.addEventListener('click', restoreOriginalImage);
         blurBtn.addEventListener('click', blurSelectedArea);
-        downloadBtn.addEventListener('click', downloadCurrentImage);
         openDeleteUpdatedModalBtn.addEventListener('click', openDeleteUpdatedModal);
         cancelDeleteUpdatedModalBtn.addEventListener('click', closeDeleteUpdatedModal);
         confirmDeleteUpdatedModalBtn.addEventListener('click', () => deleteUpdatedForm.submit());
@@ -734,14 +1010,18 @@
             renderPreviewCanvas();
         });
 
-        setEditorEnabled({% if images %}true{% else %}false{% endif %});
-        attachImageItemEvents();
-        attachDeleteEvents();
-        refreshUpdatedImageActionsVisibility();
-        const initialSelectedImage = document.querySelector('.image-item.ring-2') || document.querySelector('.image-item');
-        if (initialSelectedImage) {
-            selectImage(initialSelectedImage);
-        }
+        (async () => {
+            setEditorEnabled({% if images %}true{% else %}false{% endif %});
+            await initDownloadFolderUI();
+            attachImageItemEvents();
+            attachDeleteEvents();
+            refreshUpdatedImageActionsVisibility();
+            const initialSelectedImage =
+                document.querySelector('.image-item.ring-2') || document.querySelector('.image-item');
+            if (initialSelectedImage) {
+                selectImage(initialSelectedImage);
+            }
+        })();
     </script>
     {% endif %}
 </body>
