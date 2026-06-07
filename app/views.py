@@ -1,4 +1,5 @@
 import json
+import math
 from io import BytesIO
 from pathlib import Path
 from zipfile import ZIP_DEFLATED, ZipFile
@@ -55,6 +56,44 @@ def _normalize_points(points):
             return None
         normalized_points.append((x, y))
     return normalized_points
+
+
+def _line_mask_width(image_size):
+    return max(8, min(image_size) // 40)
+
+
+def _order_points_clockwise(points):
+    if len(points) < 4:
+        return points
+
+    center_x = sum(point[0] for point in points) / len(points)
+    center_y = sum(point[1] for point in points) / len(points)
+
+    return sorted(
+        points,
+        key=lambda point: math.atan2(point[1] - center_y, point[0] - center_x),
+    )
+
+
+def _draw_shape_on_mask(draw, points, image_size):
+    if len(points) >= 3:
+        polygon_points = _order_points_clockwise(points)
+        draw.polygon(polygon_points, fill=255)
+    elif len(points) == 2:
+        draw.line(points, fill=255, width=_line_mask_width(image_size))
+
+
+def _shapes_from_payload(payload):
+    shapes = payload.get("shapes")
+    if shapes is not None:
+        if not isinstance(shapes, list):
+            return None
+        return shapes
+
+    points = payload.get("points", [])
+    if points:
+        return [points]
+    return []
 
 
 def _require_auth_json(request):
@@ -259,9 +298,11 @@ def edit_image(request, image_id):
     except json.JSONDecodeError:
         return JsonResponse({"error": "Invalid edit payload."}, status=400)
 
-    points = payload.get("points", [])
-    if len(points) < 3:
-        return JsonResponse({"error": "At least 3 points are required."}, status=400)
+    shapes = _shapes_from_payload(payload)
+    if shapes is None:
+        return JsonResponse({"error": "Invalid shapes payload."}, status=400)
+    if not shapes:
+        return JsonResponse({"error": "At least one shape is required."}, status=400)
 
     image.image.open("rb")
     with Image.open(image.image) as original_image:
@@ -269,12 +310,22 @@ def edit_image(request, image_id):
         blurred_image = working_image.filter(ImageFilter.GaussianBlur(radius=BLUR_RADIUS))
 
         mask = Image.new("L", working_image.size, 0)
-        normalized_points = _normalize_points(points)
-        if normalized_points is None:
-            image.image.close()
-            return JsonResponse({"error": "Invalid point coordinates."}, status=400)
+        mask_draw = ImageDraw.Draw(mask)
+        drew_shape = False
+        for shape in shapes:
+            normalized_points = _normalize_points(shape)
+            if normalized_points is None:
+                image.image.close()
+                return JsonResponse({"error": "Invalid point coordinates."}, status=400)
+            if len(normalized_points) < 2:
+                continue
+            _draw_shape_on_mask(mask_draw, normalized_points, working_image.size)
+            drew_shape = True
 
-        ImageDraw.Draw(mask).polygon(normalized_points, fill=255)
+        if not drew_shape:
+            image.image.close()
+            return JsonResponse({"error": "At least one shape with 2 points is required."}, status=400)
+
         result_image = Image.composite(blurred_image, working_image, mask)
 
         output = BytesIO()
