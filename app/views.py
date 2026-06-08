@@ -20,7 +20,7 @@ from .models import ImageUpload, UserImages
 
 
 DEFAULT_SUFFIX = ".png"
-BLUR_RADIUS = 18
+BLUR_RADIUS = 22
 JPEG_QUALITY = 100
 WEBP_QUALITY = 100
 JPEG_SUFFIXES = {".jpg", ".jpeg"}
