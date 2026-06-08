@@ -69,6 +69,35 @@ class HomePageTests(TestCase):
         self.assertTrue(image.image.name.endswith('.jpg'))
         self.assertTrue(image.is_edited)
 
+    def test_edit_image_preserves_resolution(self):
+        buffer = BytesIO()
+        Image.new('RGB', (1920, 1080), color='green').save(buffer, format='JPEG', quality=95)
+        original_file = SimpleUploadedFile(
+            'large.jpg',
+            buffer.getvalue(),
+            content_type='image/jpeg',
+        )
+        image = ImageUpload.objects.create(image=original_file, original_name='large.jpg')
+
+        response = self.client.post(
+            reverse('edit_image', args=[image.id]),
+            data=json.dumps(
+                {
+                    'points': [
+                        {'x': 100, 'y': 100},
+                        {'x': 400, 'y': 100},
+                        {'x': 400, 'y': 400},
+                    ]
+                }
+            ),
+            content_type='application/json',
+        )
+
+        self.assertEqual(response.status_code, 200)
+        with Image.open(image.image) as edited_image:
+            self.assertEqual(edited_image.size, (1920, 1080))
+            self.assertEqual(edited_image.format, 'JPEG')
+
     def test_restore_image_replaces_edited_version_with_original(self):
         original_file = generate_test_image(color='blue')
         image = ImageUpload(original_name='sample.jpg')

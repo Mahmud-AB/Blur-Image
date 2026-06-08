@@ -19,6 +19,8 @@ from .models import ImageUpload, UserImages
 
 DEFAULT_SUFFIX = ".png"
 BLUR_RADIUS = 18
+JPEG_QUALITY = 100
+WEBP_QUALITY = 100
 JPEG_SUFFIXES = {".jpg", ".jpeg"}
 WEBP_SUFFIX = ".webp"
 User = get_user_model()
@@ -35,6 +37,59 @@ def _output_format_from_name(filename):
     if suffix == WEBP_SUFFIX:
         return "WEBP"
     return "PNG"
+
+
+def _prepare_working_image(original_image, output_format):
+    if output_format == "JPEG":
+        return original_image.convert("RGB")
+    if output_format == "PNG":
+        if original_image.mode in ("RGBA", "LA"):
+            return original_image.convert("RGBA")
+        if original_image.mode == "P" and "transparency" in original_image.info:
+            return original_image.convert("RGBA")
+        if original_image.mode == "L":
+            return original_image.convert("L")
+        return original_image.convert("RGB")
+    if original_image.mode in ("RGBA", "LA"):
+        return original_image.convert("RGBA")
+    if original_image.mode == "P":
+        if "transparency" in original_image.info:
+            return original_image.convert("RGBA")
+        return original_image.convert("RGB")
+    if original_image.mode == "L":
+        return original_image.convert("L")
+    return original_image.convert("RGB")
+
+
+def _embed_image_metadata(options, original_image):
+    if "icc_profile" in original_image.info:
+        options["icc_profile"] = original_image.info["icc_profile"]
+    dpi = original_image.info.get("dpi")
+    if dpi:
+        options["dpi"] = dpi
+    return options
+
+
+def _save_options(original_image, output_format):
+    if output_format == "JPEG":
+        options = {
+            "quality": original_image.info.get("quality", JPEG_QUALITY),
+            "subsampling": 0,
+        }
+        if "exif" in original_image.info:
+            options["exif"] = original_image.info["exif"]
+        return _embed_image_metadata(options, original_image)
+    if output_format == "WEBP":
+        options = {
+            "lossless": True,
+            "quality": original_image.info.get("quality", WEBP_QUALITY),
+            "method": 6,
+        }
+        return _embed_image_metadata(options, original_image)
+    if output_format == "PNG":
+        options = {"compress_level": original_image.info.get("compress_level", 3)}
+        return _embed_image_metadata(options, original_image)
+    return {}
 
 
 def _image_payload(image):
@@ -306,7 +361,8 @@ def edit_image(request, image_id):
 
     image.image.open("rb")
     with Image.open(image.image) as original_image:
-        working_image = original_image.convert("RGB")
+        output_format = _output_format_from_name(image.original_name)
+        working_image = _prepare_working_image(original_image, output_format)
         blurred_image = working_image.filter(ImageFilter.GaussianBlur(radius=BLUR_RADIUS))
 
         mask = Image.new("L", working_image.size, 0)
@@ -329,8 +385,11 @@ def edit_image(request, image_id):
         result_image = Image.composite(blurred_image, working_image, mask)
 
         output = BytesIO()
-        output_format = _output_format_from_name(image.original_name)
-        result_image.save(output, format=output_format)
+        result_image.save(
+            output,
+            format=output_format,
+            **_save_options(original_image, output_format),
+        )
     image.image.close()
 
     suffix = _file_suffix(image.original_name)
