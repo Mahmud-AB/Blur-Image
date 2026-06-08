@@ -9,6 +9,7 @@ from .views import (
     login_user,
     logout_user,
     restore_image,
+    serve_image,
     signup,
     upload_images,
 )
@@ -22,6 +23,7 @@ urlpatterns = [
     path('delete-updated/', delete_all_updated_images, name='delete_all_updated_images'),
     path('upload/', upload_images, name='upload_images'),
     path('delete/<int:image_id>/', delete_image, name='delete_image'),
+    path('image/<int:image_id>/', serve_image, name='serve_image'),
     path('edit/<int:image_id>/', edit_image, name='edit_image'),
     path('restore/<int:image_id>/', restore_image, name='restore_image'),
 ]

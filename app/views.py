@@ -1,5 +1,6 @@
 import json
 import math
+import mimetypes
 from io import BytesIO
 from pathlib import Path
 from zipfile import ZIP_DEFLATED, ZipFile
@@ -10,9 +11,10 @@ from django.http import HttpResponse, JsonResponse
 from django.shortcuts import get_object_or_404
 from django.shortcuts import redirect
 from django.shortcuts import render
+from django.urls import reverse
 from django.views.decorators.csrf import ensure_csrf_cookie
 from django.views.decorators.http import require_GET, require_POST
-from PIL import Image, ImageDraw, ImageFilter
+from PIL import Image, ImageDraw, ImageFilter, ImageOps
 
 from .models import ImageUpload, UserImages
 
@@ -92,13 +94,62 @@ def _save_options(original_image, output_format):
     return {}
 
 
-def _image_payload(image):
-    return {
+def _read_upload_bytes(uploaded_file):
+    uploaded_file.seek(0)
+    file_bytes = b"".join(uploaded_file.chunks())
+    if uploaded_file.size and len(file_bytes) != uploaded_file.size:
+        raise ValueError("Incomplete image upload.")
+    return file_bytes
+
+
+def _normalize_orientation(image):
+    return ImageOps.exif_transpose(image)
+
+
+def _encode_image_bytes(image, output_format, metadata_source):
+    output = BytesIO()
+    image.save(
+        output,
+        format=output_format,
+        **_save_options(metadata_source, output_format),
+    )
+    return output.getvalue()
+
+
+def _normalize_upload_bytes(file_bytes, original_name):
+    output_format = _output_format_from_name(original_name)
+    with Image.open(BytesIO(file_bytes)) as original_image:
+        oriented_image = _normalize_orientation(original_image)
+        normalized_bytes = _encode_image_bytes(oriented_image, output_format, original_image)
+        return normalized_bytes, oriented_image.width, oriented_image.height
+
+
+def _image_dimensions(file_bytes):
+    try:
+        with Image.open(BytesIO(file_bytes)) as image:
+            oriented_image = _normalize_orientation(image)
+            return oriented_image.width, oriented_image.height
+    except Exception:
+        return None, None
+
+
+def _image_url(image):
+    return reverse("serve_image", args=[image.id])
+
+
+def _image_payload(image, width=None, height=None, file_size=None):
+    payload = {
         "id": image.id,
         "name": image.original_name,
-        "url": image.image.url,
+        "url": _image_url(image),
         "is_edited": image.is_edited,
     }
+    if width is not None and height is not None:
+        payload["width"] = width
+        payload["height"] = height
+    if file_size is not None:
+        payload["file_size"] = file_size
+    return payload
 
 
 def _normalize_points(points):
@@ -235,6 +286,26 @@ def logout_user(request):
 
 
 @require_GET
+def serve_image(request, image_id):
+    if not request.user.is_authenticated:
+        return HttpResponse(status=401)
+
+    image = get_object_or_404(_images_for_user(request.user), id=image_id)
+    image.image.open("rb")
+    file_bytes = image.image.read()
+    image.image.close()
+
+    filename = Path(image.original_name).name or f"image_{image_id}.png"
+    content_type, _ = mimetypes.guess_type(filename)
+    response = HttpResponse(file_bytes, content_type=content_type or "application/octet-stream")
+    response["Cache-Control"] = "no-store, no-cache, must-revalidate"
+    response["Pragma"] = "no-cache"
+    if request.GET.get("download"):
+        response["Content-Disposition"] = f'attachment; filename="{filename}"'
+    return response
+
+
+@require_GET
 def download_all_updated_images(request):
     if not request.user.is_authenticated:
         return redirect("/?auth_error=Please%20log%20in%20to%20download%20images.")
@@ -297,19 +368,31 @@ def upload_images(request):
 
     uploaded_images = []
     for file in files:
-        file_bytes = file.read()
-        suffix = _file_suffix(file.name)
-        image = ImageUpload(original_name=file.name)
-        image.image.save(file.name, ContentFile(file_bytes), save=False)
+        try:
+            file_bytes = _read_upload_bytes(file)
+        except ValueError as exc:
+            return JsonResponse({"error": str(exc)}, status=400)
+
+        original_name = Path(file.name).name or "image.png"
+        try:
+            file_bytes, width, height = _normalize_upload_bytes(file_bytes, original_name)
+        except Exception:
+            return JsonResponse({"error": "Could not process uploaded image."}, status=400)
+        suffix = _file_suffix(original_name)
+        image = ImageUpload(original_name=original_name)
         image.save()
+        stored_name = f"upload_{image.id}{suffix}"
+        image.image.save(stored_name, ContentFile(file_bytes), save=False)
         image.original_image.save(
             f"original_{image.id}{suffix}",
             ContentFile(file_bytes),
             save=False,
         )
-        image.save(update_fields=["original_image"])
+        image.save(update_fields=["image", "original_image"])
         _link_image_to_user(image, request.user)
-        uploaded_images.append(_image_payload(image))
+        uploaded_images.append(
+            _image_payload(image, width=width, height=height, file_size=len(file_bytes))
+        )
 
     return JsonResponse({"images": uploaded_images}, status=201)
 
@@ -360,7 +443,8 @@ def edit_image(request, image_id):
         return JsonResponse({"error": "At least one shape is required."}, status=400)
 
     image.image.open("rb")
-    with Image.open(image.image) as original_image:
+    with Image.open(image.image) as opened_image:
+        original_image = _normalize_orientation(opened_image)
         output_format = _output_format_from_name(image.original_name)
         working_image = _prepare_working_image(original_image, output_format)
         blurred_image = working_image.filter(ImageFilter.GaussianBlur(radius=BLUR_RADIUS))

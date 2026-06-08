@@ -27,7 +27,7 @@
                 <p class="text-sm uppercase tracking-[0.35em] text-rose-300">Image Gallery</p>
                 <h1 class="mt-3 text-4xl font-black text-white sm:text-5xl">Upload and preview images</h1>
                 <p class="mt-3 max-w-2xl text-sm leading-7 text-zinc-400">
-                    Choose one or more images, or a whole folder. Images are saved immediately, then shown as thumbnails on the left with a large preview on the right.
+                    Choose one or more images, or a whole folder. Uploads are stored at full resolution with no re-compression. The editor preview is scaled down only for drawing blur shapes.
                 </p>
             </div>
 
@@ -36,7 +36,7 @@
                     <span class="rounded-full border border-rose-400/40 bg-rose-500/10 px-6 py-3 transition group-hover:bg-rose-500/20">
                         Upload images
                     </span>
-                    <input id="imageUpload" type="file" accept="image/*" multiple class="hidden">
+                    <input id="imageUpload" type="file" accept=".jpg,.jpeg,.png,.webp,.bmp,.gif,image/jpeg,image/png,image/webp" multiple class="hidden">
                 </label>
                 <label for="folderUpload" class="group flex min-h-[120px] flex-1 cursor-pointer items-center justify-center rounded-[2rem] border border-sky-500/50 bg-zinc-900/80 px-6 text-xl font-semibold text-sky-200 shadow-[0_20px_80px_rgba(0,0,0,0.35)] transition hover:border-sky-400 hover:bg-zinc-900">
                     <span class="rounded-full border border-sky-400/40 bg-sky-500/10 px-6 py-3 transition group-hover:bg-sky-500/20">
@@ -168,7 +168,7 @@
                         <article
                             class="image-card group relative shrink-0"
                             data-id="{{ image.id }}"
-                            data-url="{{ image.image.url }}"
+                            data-url="{% url 'serve_image' image.id %}"
                             data-name="{{ image.original_name }}"
                             data-edited="{% if image.is_edited %}true{% else %}false{% endif %}"
                         >
@@ -176,12 +176,12 @@
                                 type="button"
                                 class="image-item overflow-hidden rounded-[1.5rem] border border-white/10 bg-zinc-900/80 transition hover:border-white/30 hover:bg-zinc-900 {% if forloop.first %}ring-2 ring-rose-300 border-rose-300/50{% endif %}"
                                 data-id="{{ image.id }}"
-                                data-url="{{ image.image.url }}"
+                                data-url="{% url 'serve_image' image.id %}"
                                 data-name="{{ image.original_name }}"
                                 data-edited="{% if image.is_edited %}true{% else %}false{% endif %}"
                                 aria-label="Preview {{ image.original_name }}"
                             >
-                                <img src="{{ image.image.url }}" alt="{{ image.original_name }}" class="h-[96px] w-[96px] object-cover lg:h-[108px] lg:w-[108px]">
+                                <img src="{% url 'serve_image' image.id %}" alt="{{ image.original_name }}" class="h-[96px] w-[96px] object-cover lg:h-[108px] lg:w-[108px]">
                             </button>
                             <button
                                 type="button"
@@ -202,6 +202,7 @@
                             <p id="previewTitle" class="mt-1 text-base font-semibold text-white">
                                 {% if images %}{{ images.0.original_name }}{% else %}No image selected{% endif %}
                             </p>
+                            <p id="previewDimensions" class="mt-1 text-xs text-zinc-500"></p>
                         </div>
                         <div class="flex flex-wrap items-center gap-2">
                             <div class="flex items-center gap-1 rounded-full border border-white/10 bg-black/20 p-1">
@@ -270,6 +271,7 @@
         const statusText = document.getElementById('statusText');
         const imageList = document.getElementById('imageList');
         const previewTitle = document.getElementById('previewTitle');
+        const previewDimensions = document.getElementById('previewDimensions');
         const imageCount = document.getElementById('imageCount');
         const blurBtn = document.getElementById('blurBtn');
         const clearPointsBtn = document.getElementById('clearPointsBtn');
@@ -307,6 +309,7 @@
             url: '',
             image: null,
             isEdited: false,
+            objectUrl: null,
         };
 
         let downloadDirHandle = null;
@@ -757,17 +760,61 @@
             };
         }
 
-        function loadImageIntoEditor(url, name, imageId) {
-            const image = new Image();
-            image.onload = () => {
+        function updatePreviewDetails(name, width, height) {
+            previewTitle.textContent = name || 'No image selected';
+            if (!previewDimensions) {
+                return;
+            }
+            if (width && height) {
+                previewDimensions.textContent = `${width} × ${height} pixels · full resolution preserved`;
+            } else {
+                previewDimensions.textContent = '';
+            }
+        }
+
+        function revokeEditorObjectUrl() {
+            if (currentImageState.objectUrl) {
+                URL.revokeObjectURL(currentImageState.objectUrl);
+                currentImageState.objectUrl = null;
+            }
+        }
+
+        async function loadImageIntoEditor(url, name, imageId) {
+            revokeEditorObjectUrl();
+
+            try {
+                const fetchUrl = url.startsWith('http')
+                    ? url
+                    : new URL(url, window.location.origin).href;
+                const response = await fetch(`${fetchUrl}${fetchUrl.includes('?') ? '&' : '?'}v=${Date.now()}`, {
+                    credentials: 'same-origin',
+                    cache: 'no-store',
+                });
+                if (!response.ok) {
+                    throw new Error('Could not load image.');
+                }
+
+                const blob = await response.blob();
+                const objectUrl = URL.createObjectURL(blob);
+                const image = new Image();
+                await new Promise((resolve, reject) => {
+                    image.onload = () => resolve();
+                    image.onerror = () => reject(new Error('Could not decode image.'));
+                    image.src = objectUrl;
+                });
+
                 currentImageState = {
                     id: imageId,
                     name,
                     url,
                     image,
                     isEdited: currentImageState.isEdited,
+                    objectUrl,
                 };
                 editorFrame.classList.remove('hidden');
+                if (emptyPreview) {
+                    emptyPreview.classList.add('hidden');
+                }
                 buildEditorSurface();
                 displaySize = fitImageSize(image.naturalWidth, image.naturalHeight);
                 resetZoom();
@@ -775,8 +822,10 @@
                 resetSelectionPoints();
                 renderPreviewCanvas();
                 setEditorEnabled(true);
-            };
-            image.src = `${url}${url.includes('?') ? '&' : '?'}v=${Date.now()}`;
+                updatePreviewDetails(name, image.naturalWidth, image.naturalHeight);
+            } catch (error) {
+                statusText.textContent = error.message;
+            }
         }
 
         function selectImage(button) {
@@ -785,7 +834,6 @@
             });
 
             button.classList.add('ring-2', 'ring-rose-300', 'border-rose-300/50');
-            previewTitle.textContent = button.dataset.name;
             currentImageButton = button;
             currentImageState.isEdited = button.dataset.edited === 'true';
             loadImageIntoEditor(button.dataset.url, button.dataset.name, button.dataset.id);
@@ -967,8 +1015,17 @@
                 const cardsBefore = Array.from(imageList.querySelectorAll('.image-card'));
                 const cardIndex = card ? cardsBefore.indexOf(card) : -1;
                 const blurId = currentImageState.id;
+                const blurredUrl = `${data.url}${data.url.includes('?') ? '&' : '?'}v=${Date.now()}`;
 
-                await downloadImageByUrl(data.url, data.name);
+                currentImageButton.dataset.url = blurredUrl;
+                currentImageButton.dataset.edited = 'true';
+                currentImageButton.querySelector('img').src = blurredUrl;
+                currentImageButton.closest('.image-card').dataset.url = blurredUrl;
+                currentImageButton.closest('.image-card').dataset.edited = 'true';
+                currentImageState.isEdited = true;
+                await loadImageIntoEditor(blurredUrl, data.name, blurId);
+
+                await downloadImageByUrl(blurredUrl, data.name);
 
                 statusText.textContent = 'Removing image and loading next…';
                 await deleteImage(blurId, {
@@ -1023,42 +1080,43 @@
 
         async function downloadImageByUrl(url, filename) {
             if (!url) {
-                return;
+                throw new Error('No image URL to download.');
             }
 
             const safeName = sanitizeDownloadFileName(filename);
+            const baseUrl = url.startsWith('http') ? url : new URL(url, window.location.origin).href;
+            const separator = baseUrl.includes('?') ? '&' : '?';
+            const downloadUrl = `${baseUrl}${separator}download=1&v=${Date.now()}`;
+
+            const response = await fetch(downloadUrl, { credentials: 'same-origin', cache: 'no-store' });
+            if (!response.ok) {
+                throw new Error('Could not download image. The server could not find the file.');
+            }
+
+            const blob = await response.blob();
+            if (!blob.size) {
+                throw new Error('Could not download image. The server returned an empty file.');
+            }
 
             if (downloadDirHandle && typeof downloadDirHandle.getFileHandle === 'function') {
                 const canWrite = await ensureDirectoryWritable(downloadDirHandle);
                 if (canWrite) {
-                    try {
-                        const fetchUrl = url.startsWith('http') ? url : new URL(url, window.location.origin).href;
-                        const response = await fetch(fetchUrl, { credentials: 'same-origin' });
-                        if (!response.ok) {
-                            throw new Error('Could not read image for saving.');
-                        }
-                        const blob = await response.blob();
-                        const fileHandle = await downloadDirHandle.getFileHandle(safeName, { create: true });
-                        const writable = await fileHandle.createWritable();
-                        await writable.write(blob);
-                        await writable.close();
-                        return;
-                    } catch (err) {
-                        console.warn(err);
-                    }
+                    const fileHandle = await downloadDirHandle.getFileHandle(safeName, { create: true });
+                    const writable = await fileHandle.createWritable();
+                    await writable.write(blob);
+                    await writable.close();
+                    return;
                 }
             }
 
+            const objectUrl = URL.createObjectURL(blob);
             const link = document.createElement('a');
-            const href =
-                url.startsWith('http') || url.startsWith('//')
-                    ? `${url}${url.includes('?') ? '&' : '?'}download=${Date.now()}`
-                    : `${url}${url.includes('?') ? '&' : '?'}download=${Date.now()}`;
-            link.href = href;
+            link.href = objectUrl;
             link.download = safeName;
             document.body.appendChild(link);
             link.click();
             link.remove();
+            URL.revokeObjectURL(objectUrl);
         }
 
         function isImageFile(file) {
@@ -1112,7 +1170,15 @@
                 }
 
                 imageCount.textContent = String(document.querySelectorAll('.image-item').length);
-                statusText.textContent = `${data.images.length} image(s) saved successfully.`;
+                const savedDetails = data.images
+                    .map((image) => {
+                        if (image.width && image.height) {
+                            return `${image.name} (${image.width}×${image.height})`;
+                        }
+                        return image.name;
+                    })
+                    .join(', ');
+                statusText.textContent = `${data.images.length} image(s) saved at full resolution: ${savedDetails}`;
                 imageUpload.value = '';
                 if (folderUpload) {
                     folderUpload.value = '';
