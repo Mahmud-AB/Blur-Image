@@ -120,7 +120,7 @@ def _normalize_upload_bytes(file_bytes, original_name):
     output_format = _output_format_from_name(original_name)
     with Image.open(BytesIO(file_bytes)) as original_image:
         oriented_image = _normalize_orientation(original_image)
-        normalized_bytes = _encode_image_bytes(oriented_image, output_format, original_image)
+        normalized_bytes = _encode_image_bytes(oriented_image, output_format, oriented_image)
         return normalized_bytes, oriented_image.width, oriented_image.height
 
 
