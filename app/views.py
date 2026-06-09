@@ -76,7 +76,8 @@ def _save_options(original_image, output_format):
     if output_format == "JPEG":
         options = {
             "quality": original_image.info.get("quality", JPEG_QUALITY),
-            "subsampling": 0,
+            "subsampling": original_image.info.get("subsampling", 0),
+            "optimize": False,
         }
         if "exif" in original_image.info:
             options["exif"] = original_image.info["exif"]
@@ -106,6 +107,14 @@ def _normalize_orientation(image):
     return ImageOps.exif_transpose(image)
 
 
+def _needs_exif_transpose(image):
+    try:
+        orientation = image.getexif().get(0x0112, 1)
+    except Exception:
+        return False
+    return orientation not in (None, 1)
+
+
 def _encode_image_bytes(image, output_format, metadata_source):
     output = BytesIO()
     image.save(
@@ -120,6 +129,8 @@ def _normalize_upload_bytes(file_bytes, original_name):
     output_format = _output_format_from_name(original_name)
     with Image.open(BytesIO(file_bytes)) as original_image:
         oriented_image = _normalize_orientation(original_image)
+        if not _needs_exif_transpose(original_image):
+            return file_bytes, oriented_image.width, oriented_image.height
         normalized_bytes = _encode_image_bytes(oriented_image, output_format, oriented_image)
         return normalized_bytes, oriented_image.width, oriented_image.height
 
@@ -442,8 +453,9 @@ def edit_image(request, image_id):
     if not shapes:
         return JsonResponse({"error": "At least one shape is required."}, status=400)
 
-    image.image.open("rb")
-    with Image.open(image.image) as opened_image:
+    source_field = image.image if image.is_edited else image.original_image
+    source_field.open("rb")
+    with Image.open(source_field) as opened_image:
         original_image = _normalize_orientation(opened_image)
         output_format = _output_format_from_name(image.original_name)
         working_image = _prepare_working_image(original_image, output_format)
@@ -455,7 +467,7 @@ def edit_image(request, image_id):
         for shape in shapes:
             normalized_points = _normalize_points(shape)
             if normalized_points is None:
-                image.image.close()
+                source_field.close()
                 return JsonResponse({"error": "Invalid point coordinates."}, status=400)
             if len(normalized_points) < 2:
                 continue
@@ -463,7 +475,7 @@ def edit_image(request, image_id):
             drew_shape = True
 
         if not drew_shape:
-            image.image.close()
+            source_field.close()
             return JsonResponse({"error": "At least one shape with 2 points is required."}, status=400)
 
         result_image = Image.composite(blurred_image, working_image, mask)
@@ -474,7 +486,7 @@ def edit_image(request, image_id):
             format=output_format,
             **_save_options(original_image, output_format),
         )
-    image.image.close()
+    source_field.close()
 
     suffix = _file_suffix(image.original_name)
     replacement_name = f"edited_{image_id}{suffix}"
