@@ -28,3 +28,31 @@ class ImageUpload(models.Model):
 
     def __str__(self):
         return self.original_name
+
+
+class AnnotationCategory(models.TextChoices):
+    SIGNBOARD = 'signboard', 'Signboard'
+    ROAD = 'road', 'Road'
+    NUMBER_PLATE = 'number_plate', 'Number plate'
+
+
+class AnnotationRow(models.Model):
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        related_name='annotation_rows',
+        on_delete=models.CASCADE,
+    )
+    category = models.CharField(
+        max_length=32,
+        choices=AnnotationCategory.choices,
+    )
+    image_name = models.CharField(max_length=255)
+    coordinate_text = models.TextField()
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        unique_together = ('user', 'category', 'image_name')
+        ordering = ['category', 'image_name']
+
+    def __str__(self):
+        return f"{self.user} {self.category} {self.image_name}"

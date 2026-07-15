@@ -1,14 +1,19 @@
+import io
 import json
+import tempfile
 from io import BytesIO
+from pathlib import Path
+from zipfile import ZipFile
 
+from django.conf import settings
 from django.contrib.auth import get_user_model
 from django.core.files.base import ContentFile
-from django.test import TestCase
+from django.test import TestCase, override_settings
 from django.urls import reverse
 from django.core.files.uploadedfile import SimpleUploadedFile
 from PIL import Image
 
-from .models import ImageUpload, UserImages
+from .models import AnnotationRow, ImageUpload, UserImages
 
 User = get_user_model()
 
@@ -67,6 +72,8 @@ class HomePageTests(TestCase):
     def test_delete_image_removes_saved_record(self):
         file = generate_test_image()
         image = ImageUpload.objects.create(image=file, original_name='sample.jpg')
+        user_images, _ = UserImages.objects.get_or_create(user=self.user)
+        user_images.image.add(image)
 
         response = self.client.post(reverse('delete_image', args=[image.id]))
 
@@ -76,6 +83,8 @@ class HomePageTests(TestCase):
     def test_edit_image_replaces_saved_file(self):
         original_file = generate_test_image()
         image = ImageUpload.objects.create(image=original_file, original_name='sample.jpg')
+        user_images, _ = UserImages.objects.get_or_create(user=self.user)
+        user_images.image.add(image)
 
         response = self.client.post(
             reverse('edit_image', args=[image.id]),
@@ -105,6 +114,8 @@ class HomePageTests(TestCase):
             content_type='image/jpeg',
         )
         image = ImageUpload.objects.create(image=original_file, original_name='large.jpg')
+        user_images, _ = UserImages.objects.get_or_create(user=self.user)
+        user_images.image.add(image)
 
         response = self.client.post(
             reverse('edit_image', args=[image.id]),
@@ -120,6 +131,7 @@ class HomePageTests(TestCase):
             content_type='application/json',
         )
 
+        image.refresh_from_db()
         self.assertEqual(response.status_code, 200)
         with Image.open(image.image) as edited_image:
             self.assertEqual(edited_image.size, (1920, 1080))
@@ -156,6 +168,120 @@ class HomePageTests(TestCase):
         payload = response.json()['images'][0]
         self.assertEqual(payload['url'], reverse('serve_image', args=[payload['id']]))
 
+    @override_settings(MEDIA_ROOT=tempfile.mkdtemp())
+    def test_edit_image_saves_annotation_coordinates_by_category(self):
+        original_file = generate_test_image(color='blue')
+        image = ImageUpload.objects.create(image=original_file, original_name='sample.jpg')
+        user_images, _ = UserImages.objects.get_or_create(user=self.user)
+        user_images.image.add(image)
+
+        response = self.client.post(
+            reverse('edit_image', args=[image.id]),
+            data=json.dumps(
+                {
+                    'category': 'signboard',
+                    'shapes': [
+                        [
+                            {'x': 0, 'y': 0},
+                            {'x': 10, 'y': 0},
+                            {'x': 10, 'y': 10},
+                            {'x': 0, 'y': 10},
+                        ]
+                    ],
+                }
+            ),
+            content_type='application/json',
+        )
+
+        self.assertEqual(response.status_code, 200)
+        annotation = AnnotationRow.objects.filter(
+            user=self.user,
+            category='signboard',
+            image_name='sample.jpg',
+        ).first()
+        self.assertIsNotNone(annotation)
+        self.assertEqual(
+            annotation.coordinate_text,
+            '0,0;10,0;10,10;0,10',
+        )
+
+    @override_settings(MEDIA_ROOT=tempfile.mkdtemp())
+    def test_edit_image_updates_existing_annotation_row(self):
+        original_file = generate_test_image(color='blue')
+        image = ImageUpload.objects.create(image=original_file, original_name='sample.jpg')
+        user_images, _ = UserImages.objects.get_or_create(user=self.user)
+        user_images.image.add(image)
+
+        self.client.post(
+            reverse('edit_image', args=[image.id]),
+            data=json.dumps(
+                {
+                    'category': 'signboard',
+                    'shapes': [
+                        [
+                            {'x': 0, 'y': 0},
+                            {'x': 10, 'y': 0},
+                            {'x': 10, 'y': 10},
+                        ]
+                    ],
+                }
+            ),
+            content_type='application/json',
+        )
+
+        self.client.post(
+            reverse('edit_image', args=[image.id]),
+            data=json.dumps(
+                {
+                    'category': 'signboard',
+                    'shapes': [
+                        [
+                            {'x': 5, 'y': 5},
+                            {'x': 15, 'y': 5},
+                            {'x': 15, 'y': 15},
+                        ]
+                    ],
+                }
+            ),
+            content_type='application/json',
+        )
+
+        rows = AnnotationRow.objects.filter(user=self.user, category='signboard', image_name='sample.jpg')
+        self.assertEqual(rows.count(), 1)
+        annotation = rows.first()
+        self.assertEqual(annotation.coordinate_text, '5,5;15,5;15,15')
+
+    @override_settings(MEDIA_ROOT=tempfile.mkdtemp())
+    def test_download_annotations_zip(self):
+        image_name = 'sample.jpg'
+        AnnotationRow.objects.create(
+            user=self.user,
+            category='signboard',
+            image_name=image_name,
+            coordinate_text='0,0;10,0;10,10;0,10',
+        )
+        AnnotationRow.objects.create(
+            user=self.user,
+            category='road',
+            image_name=image_name,
+            coordinate_text='20,20;30,20;30,30;20,30',
+        )
+
+        response = self.client.get(reverse('download_annotations'))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response['Content-Type'], 'application/zip')
+        self.assertIn('attachment; filename="annotations.zip"', response['Content-Disposition'])
+
+        with ZipFile(io.BytesIO(response.content), 'r') as zip_file:
+            namelist = zip_file.namelist()
+            self.assertIn('signboard.txt', namelist)
+            self.assertIn('road.txt', namelist)
+            signboard_data = zip_file.read('signboard.txt').decode('utf-8')
+            road_data = zip_file.read('road.txt').decode('utf-8')
+            self.assertIn('sample.jpg\t0,0;10,0;10,10;0,10', signboard_data)
+            self.assertIn('sample.jpg\t20,20;30,20;30,30;20,30', road_data)
+
     def test_restore_image_replaces_edited_version_with_original(self):
         original_file = generate_test_image(color='blue')
         image = ImageUpload(original_name='sample.jpg')
@@ -164,6 +290,8 @@ class HomePageTests(TestCase):
         image.save()
         image.original_image.save('original_sample.jpg', ContentFile(original_bytes), save=False)
         image.save(update_fields=['original_image'])
+        user_images, _ = UserImages.objects.get_or_create(user=self.user)
+        user_images.image.add(image)
 
         self.client.post(
             reverse('edit_image', args=[image.id]),

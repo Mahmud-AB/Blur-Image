@@ -27,7 +27,7 @@
                 <p class="text-sm uppercase tracking-[0.35em] text-rose-300">Image Gallery</p>
                 <h1 class="mt-3 text-4xl font-black text-white sm:text-5xl">Upload and preview images</h1>
                 <p class="mt-3 max-w-2xl text-sm leading-7 text-zinc-400">
-                    Choose one or more images, or a whole folder. Uploads are stored at full resolution with no re-compression. The editor preview is scaled down only for drawing blur shapes.
+                    Choose one or more images, or a whole folder. Uploads are stored at full resolution with no re-compression. The editor preview matches the original image pixels; use zoom and scroll for large images.
                 </p>
             </div>
 
@@ -145,6 +145,14 @@
                             Download Edited
                         </a>
                         <form id="deleteUpdatedForm" method="post" action="{% url 'delete_all_updated_images' %}">
+                    </div>
+                    <a
+                        href="{% url 'download_annotations' %}"
+                        class="inline-flex items-center rounded-full border border-emerald-400/30 bg-emerald-400/10 px-4 py-2 text-sm font-semibold text-emerald-200 transition hover:bg-emerald-400/20"
+                    >
+                        Download Annotations
+                    </a>
+                    <div class="rounded-2xl border border-white/10 bg-black/20 px-4 py-3 text-right">
                             {% csrf_token %}
                             <button
                                 id="openDeleteUpdatedModalBtn"
@@ -213,8 +221,16 @@
                             <button id="clearPointsBtn" type="button" class="rounded-full border border-white/10 px-4 py-2 text-sm text-zinc-300 transition hover:bg-white/10">
                                 Restore image
                             </button>
+                            <label class="flex items-center gap-2 rounded-full border border-white/10 bg-black/20 px-3 py-2 text-sm text-zinc-300">
+                                <span class="text-[11px] uppercase tracking-[0.25em] text-zinc-500">Category</span>
+                                <select id="categorySelect" class="bg-transparent text-sm font-semibold text-white outline-none">
+                                    <option value="signboard">Signboard</option>
+                                    <option value="road">Road</option>
+                                    <option value="number_plate">Number plate</option>
+                                </select>
+                            </label>
                             <button id="blurBtn" type="button" class="rounded-full bg-rose-400 px-4 py-2 text-sm font-semibold text-zinc-950 transition hover:bg-rose-300 disabled:cursor-not-allowed disabled:bg-zinc-700 disabled:text-zinc-400">
-                                Blur area
+                                Blur &amp; save
                             </button>
                         </div>
                     </div>
@@ -275,6 +291,7 @@
         const imageCount = document.getElementById('imageCount');
         const blurBtn = document.getElementById('blurBtn');
         const clearPointsBtn = document.getElementById('clearPointsBtn');
+        const categorySelect = document.getElementById('categorySelect');
         const zoomInBtn = document.getElementById('zoomInBtn');
         const zoomOutBtn = document.getElementById('zoomOutBtn');
         const zoomResetBtn = document.getElementById('zoomResetBtn');
@@ -510,12 +527,25 @@
             }
         }
 
+        function getViewFitSize() {
+            if (!currentImageState.image) {
+                return { width: 0, height: 0 };
+            }
+            return fitImageSize(currentImageState.image.naturalWidth, currentImageState.image.naturalHeight);
+        }
+
+        function viewBoxUnitsPerScreenPixel() {
+            const fit = getViewFitSize();
+            const cssWidth = Math.max(1, fit.width * zoomLevel);
+            return currentImageState.image.naturalWidth / cssWidth;
+        }
+
         function overlayPointRadius() {
-            return 5 / zoomLevel;
+            return 5 * viewBoxUnitsPerScreenPixel();
         }
 
         function overlayStrokeWidth() {
-            return 2 / zoomLevel;
+            return 2 * viewBoxUnitsPerScreenPixel();
         }
 
         function applyZoom() {
@@ -523,8 +553,9 @@
                 return;
             }
 
-            const width = displaySize.width * zoomLevel;
-            const height = displaySize.height * zoomLevel;
+            const fit = getViewFitSize();
+            const width = fit.width * zoomLevel;
+            const height = fit.height * zoomLevel;
             previewCanvas.style.width = `${width}px`;
             previewCanvas.style.height = `${height}px`;
             overlaySvg.style.width = `${width}px`;
@@ -553,13 +584,15 @@
                 const viewportRect = editorViewport.getBoundingClientRect();
                 const offsetX = clientX - viewportRect.left + editorViewport.scrollLeft;
                 const offsetY = clientY - viewportRect.top + editorViewport.scrollTop;
-                const ratioX = offsetX / (displaySize.width * previousZoom);
-                const ratioY = offsetY / (displaySize.height * previousZoom);
+                const fit = getViewFitSize();
+                const ratioX = offsetX / (fit.width * previousZoom);
+                const ratioY = offsetY / (fit.height * previousZoom);
 
                 applyZoom();
 
-                editorViewport.scrollLeft = ratioX * displaySize.width * zoomLevel - (clientX - viewportRect.left);
-                editorViewport.scrollTop = ratioY * displaySize.height * zoomLevel - (clientY - viewportRect.top);
+                const updatedFit = getViewFitSize();
+                editorViewport.scrollLeft = ratioX * updatedFit.width * zoomLevel - (clientX - viewportRect.left);
+                editorViewport.scrollTop = ratioY * updatedFit.height * zoomLevel - (clientY - viewportRect.top);
                 return;
             }
 
@@ -568,7 +601,8 @@
 
         function finalizeCurrentShape() {
             if (currentShape.length >= 2) {
-                completedShapes.push([...currentShape]);
+                const assignedCategory = categorySelect?.value || '';
+                completedShapes.push({ points: [...currentShape], category: assignedCategory });
             }
             currentShape = [];
             drawOverlay();
@@ -582,7 +616,8 @@
             }
 
             if (completedShapes.length > 0) {
-                currentShape = completedShapes.pop();
+                const popped = completedShapes.pop();
+                currentShape = Array.isArray(popped) ? popped : (popped && popped.points) || [];
                 currentShape.pop();
                 drawOverlay();
                 return true;
@@ -614,7 +649,7 @@
             return points;
         }
 
-        function drawShapeOnOverlay(points) {
+        function drawShapeOnOverlay(points, category) {
             const strokeWidth = overlayStrokeWidth();
             const pointRadius = overlayPointRadius();
 
@@ -647,6 +682,29 @@
                 dot.setAttribute('stroke-width', String(strokeWidth));
                 overlaySvg.appendChild(dot);
             });
+
+            if (category) {
+                // compute centroid for label placement
+                const pts = points.length ? points : [];
+                if (pts.length) {
+                    const cx = pts.reduce((s, p) => s + p.x, 0) / pts.length;
+                    const cy = pts.reduce((s, p) => s + p.y, 0) / pts.length;
+
+                    const label = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+                    label.setAttribute('x', String(cx));
+                    label.setAttribute('y', String(Math.max(12, cy - 8)));
+                    label.setAttribute('fill', '#fff');
+                    label.setAttribute('font-size', String(Math.max(11, Math.round(overlayStrokeWidth() * 3))));
+                    label.setAttribute('font-weight', '600');
+                    label.setAttribute('text-anchor', 'middle');
+                    label.setAttribute('stroke', '#000');
+                    label.setAttribute('stroke-width', '0.6');
+                    label.setAttribute('paint-order', 'stroke');
+                    const pretty = String(category).replace(/_/g, ' ');
+                    label.textContent = pretty.charAt(0).toUpperCase() + pretty.slice(1);
+                    overlaySvg.appendChild(label);
+                }
+            }
         }
 
         function buildEditorSurface() {
@@ -671,6 +729,14 @@
             editorFrame.appendChild(editorViewport);
         }
 
+        function _shapePoints(shape) {
+            return Array.isArray(shape) ? shape : (shape && shape.points) || [];
+        }
+
+        function _shapeCategory(shape) {
+            return shape && shape.category ? shape.category : '';
+        }
+
         function drawOverlay() {
             if (!overlaySvg) {
                 return;
@@ -679,8 +745,8 @@
             overlaySvg.setAttribute('viewBox', `0 0 ${displaySize.width} ${displaySize.height}`);
             overlaySvg.innerHTML = '';
 
-            completedShapes.forEach((shape) => drawShapeOnOverlay(shape));
-            drawShapeOnOverlay(currentShape);
+            completedShapes.forEach((shape) => drawShapeOnOverlay(_shapePoints(shape), _shapeCategory(shape)));
+            drawShapeOnOverlay(currentShape, categorySelect?.value || '');
         }
 
         function fitImageSize(width, height) {
@@ -816,7 +882,10 @@
                     emptyPreview.classList.add('hidden');
                 }
                 buildEditorSurface();
-                displaySize = fitImageSize(image.naturalWidth, image.naturalHeight);
+                displaySize = {
+                    width: image.naturalWidth,
+                    height: image.naturalHeight,
+                };
                 resetZoom();
                 registerCanvasPointing();
                 resetSelectionPoints();
@@ -975,8 +1044,8 @@
 
         async function blurSelectedArea() {
             const shapesToBlur = [
-                ...completedShapes,
-                ...(currentShape.length >= 2 ? [currentShape] : []),
+                ...completedShapes.map((s) => ({ points: _shapePoints(s), category: _shapeCategory(s) })),
+                ...(currentShape.length >= 2 ? [{ points: currentShape, category: categorySelect?.value || '' }] : []),
             ];
 
             if (!currentImageState.image || !shapesToBlur.length) {
@@ -986,14 +1055,21 @@
 
             statusText.textContent = 'Blurring selected area...';
 
-            const widthScale = currentImageState.image.naturalWidth / displaySize.width;
-            const heightScale = currentImageState.image.naturalHeight / displaySize.height;
-            const shapes = shapesToBlur.map((shape) =>
-                closedPolygonPoints(shape).map((point) => ({
-                    x: point.x * widthScale,
-                    y: point.y * heightScale,
-                }))
-            );
+            const groups = {};
+            shapesToBlur.forEach((s) => {
+                const cat = s.category || '';
+                if (!cat) return;
+                if (!groups[cat]) groups[cat] = [];
+                const pts = closedPolygonPoints(s.points).map((point) => ({ x: point.x, y: point.y }));
+                if (pts.length >= 2) groups[cat].push(pts);
+            });
+
+            if (Object.keys(groups).length === 0) {
+                statusText.textContent = 'Select a category for each shape before saving.';
+                return;
+            }
+
+            const annotations = Object.entries(groups).map(([category, shapes]) => ({ category, shapes }));
 
             try {
                 const { response, data } = await requestJson(`/edit/${currentImageState.id}/`, {
@@ -1002,7 +1078,7 @@
                         'Content-Type': 'application/json',
                         'X-CSRFToken': getCsrfToken(),
                     },
-                    body: JSON.stringify({ shapes }),
+                    body: JSON.stringify({ annotations }),
                 });
 
                 if (!response.ok) {
@@ -1026,6 +1102,7 @@
                 await loadImageIntoEditor(blurredUrl, data.name, blurId);
 
                 await downloadImageByUrl(blurredUrl, data.name);
+                await downloadAnnotationsTxt();
 
                 statusText.textContent = 'Removing image and loading next…';
                 await deleteImage(blurId, {
@@ -1113,6 +1190,30 @@
             const link = document.createElement('a');
             link.href = objectUrl;
             link.download = safeName;
+            document.body.appendChild(link);
+            link.click();
+            link.remove();
+            URL.revokeObjectURL(objectUrl);
+        }
+
+        async function downloadAnnotationsTxt() {
+            const response = await fetch('{% url "download_annotations" %}', {
+                credentials: 'same-origin',
+                cache: 'no-store',
+            });
+            if (!response.ok) {
+                throw new Error('Could not download annotation file.');
+            }
+
+            const blob = await response.blob();
+            if (!blob.size) {
+                throw new Error('Could not download annotation file. The server returned an empty file.');
+            }
+
+            const objectUrl = URL.createObjectURL(blob);
+            const link = document.createElement('a');
+            link.href = objectUrl;
+            link.download = 'annotations.txt';
             document.body.appendChild(link);
             link.click();
             link.remove();
@@ -1297,8 +1398,7 @@
             if (!currentImageState.image || !previewCanvas) {
                 return;
             }
-            displaySize = fitImageSize(currentImageState.image.naturalWidth, currentImageState.image.naturalHeight);
-            renderPreviewCanvas();
+            applyZoom();
         });
 
         (async () => {

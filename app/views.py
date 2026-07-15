@@ -5,18 +5,20 @@ from io import BytesIO
 from pathlib import Path
 from zipfile import ZIP_DEFLATED, ZipFile
 
+from django.conf import settings
 from django.contrib.auth import authenticate, get_user_model, login, logout
 from django.core.files.base import ContentFile
 from django.http import HttpResponse, JsonResponse
 from django.shortcuts import get_object_or_404
 from django.shortcuts import redirect
 from django.shortcuts import render
+from django.template.defaultfilters import slugify
 from django.urls import reverse
 from django.views.decorators.csrf import ensure_csrf_cookie
 from django.views.decorators.http import require_GET, require_POST
 from PIL import Image, ImageDraw, ImageFilter, ImageOps
 
-from .models import ImageUpload, UserImages
+from .models import AnnotationCategory, AnnotationRow, ImageUpload, UserImages
 
 
 DEFAULT_SUFFIX = ".png"
@@ -173,6 +175,44 @@ def _normalize_points(points):
             return None
         normalized_points.append((x, y))
     return normalized_points
+
+
+def _normalize_annotation_category(raw_category):
+    if not raw_category:
+        return None
+
+    normalized = str(raw_category).strip().lower()
+    return normalized if normalized in AnnotationCategory.values else None
+
+
+def _save_annotation_rows(image, user, category, shapes):
+    if not category:
+        return
+
+    image_name = Path(image.original_name).name or f"image_{image.id}"
+    shape_groups = []
+    for shape in shapes:
+        normalized_points = _normalize_points(shape)
+        if normalized_points is None or len(normalized_points) < 2:
+            continue
+
+        shape_groups.append(
+            ";".join(
+                f"{int(x) if float(x).is_integer() else format(x, '.2f')},{int(y) if float(y).is_integer() else format(y, '.2f')}"
+                for x, y in normalized_points
+            )
+        )
+    if not shape_groups:
+        return
+
+    coordinate_text = "|".join(shape_groups)
+
+    AnnotationRow.objects.update_or_create(
+        user=user,
+        category=category,
+        image_name=image_name,
+        defaults={"coordinate_text": coordinate_text},
+    )
 
 
 def _line_mask_width(image_size):
@@ -341,6 +381,43 @@ def download_all_updated_images(request):
     return response
 
 
+@require_GET
+def download_annotations(request):
+    if not request.user.is_authenticated:
+        return redirect("/?auth_error=Please%20log%20in%20to%20download%20annotations.")
+
+    rows = AnnotationRow.objects.filter(user=request.user).order_by("category", "image_name")
+    if not rows.exists():
+        return redirect("home")
+
+    zip_buffer = BytesIO()
+    with ZipFile(zip_buffer, "w", compression=ZIP_DEFLATED) as zip_file:
+        current_category = None
+        category_lines = []
+        for row in rows:
+            if current_category is None:
+                current_category = row.category
+            if row.category != current_category:
+                zip_file.writestr(
+                    f"{current_category}.txt",
+                    "\n".join(category_lines).encode("utf-8") + b"\n",
+                )
+                current_category = row.category
+                category_lines = []
+            category_lines.append(f"{row.image_name}\t{row.coordinate_text}")
+
+        if current_category is not None:
+            zip_file.writestr(
+                f"{current_category}.txt",
+                "\n".join(category_lines).encode("utf-8") + b"\n",
+            )
+
+    zip_buffer.seek(0)
+    response = HttpResponse(zip_buffer.getvalue(), content_type="application/zip")
+    response["Content-Disposition"] = 'attachment; filename="annotations.zip"'
+    return response
+
+
 @require_POST
 def delete_all_updated_images(request):
     if not request.user.is_authenticated:
@@ -447,11 +524,42 @@ def edit_image(request, image_id):
     except json.JSONDecodeError:
         return JsonResponse({"error": "Invalid edit payload."}, status=400)
 
-    shapes = _shapes_from_payload(payload)
-    if shapes is None:
-        return JsonResponse({"error": "Invalid shapes payload."}, status=400)
-    if not shapes:
-        return JsonResponse({"error": "At least one shape is required."}, status=400)
+    annotations = payload.get("annotations")
+    category = None
+    per_category_shapes = {}
+
+    if annotations is not None:
+        if not isinstance(annotations, list):
+            return JsonResponse({"error": "Invalid annotations payload."}, status=400)
+        shapes = []
+        for ann in annotations:
+            if not isinstance(ann, dict):
+                return JsonResponse({"error": "Invalid annotation entry."}, status=400)
+            ann_cat_raw = ann.get("category")
+            ann_cat = _normalize_annotation_category(ann_cat_raw)
+            if ann_cat_raw is not None and ann_cat is None:
+                return JsonResponse({"error": "Invalid category in annotations."}, status=400)
+            ann_shapes = ann.get("shapes")
+            if not isinstance(ann_shapes, list):
+                return JsonResponse({"error": "Invalid shapes in annotation."}, status=400)
+            # collect shapes for mask drawing and per-category export
+            for s in ann_shapes:
+                shapes.append(s)
+                per_category_shapes.setdefault(ann_cat or "", []).append(s)
+        if not shapes:
+            return JsonResponse({"error": "At least one shape is required."}, status=400)
+    else:
+        shapes = _shapes_from_payload(payload)
+        if shapes is None:
+            return JsonResponse({"error": "Invalid shapes payload."}, status=400)
+        if not shapes:
+            return JsonResponse({"error": "At least one shape is required."}, status=400)
+
+        category = _normalize_annotation_category(payload.get("category"))
+        if payload.get("category") is not None and category is None:
+            return JsonResponse({"error": "Invalid category."}, status=400)
+        if category:
+            per_category_shapes.setdefault(category, []).extend(shapes)
 
     source_field = image.image if image.is_edited else image.original_image
     source_field.open("rb")
@@ -495,6 +603,11 @@ def edit_image(request, image_id):
     image.image.save(replacement_name, ContentFile(output.getvalue()), save=False)
     image.is_edited = True
     image.save(update_fields=["image", "is_edited"])
+
+    if per_category_shapes:
+        for cat, shapes_list in per_category_shapes.items():
+            if cat:
+                _save_annotation_rows(image, request.user, cat, shapes_list)
 
     return JsonResponse(_image_payload(image))
 
