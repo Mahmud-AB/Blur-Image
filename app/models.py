@@ -28,6 +28,14 @@ class AnnotationCategory(models.TextChoices):
     SIGNBOARD = "signboard", "Signboard"
     ROAD = "road", "Road"
     NUMBER_PLATE = "number_plate", "Number plate"
+    OBSTACLE = "obstacle", "Obstacle"
+
+
+# Categories that are recorded but not blurred on the image.
+NO_BLUR_CATEGORIES = frozenset({
+    AnnotationCategory.ROAD,
+    AnnotationCategory.OBSTACLE,
+})
 
 
 class AnnotationRow(models.Model):

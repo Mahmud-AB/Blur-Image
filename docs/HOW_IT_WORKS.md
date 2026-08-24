@@ -6,14 +6,14 @@ This document explains what the project does, how each piece works, and which te
 
 ## 1. What this project is
 
-**BLUR_IMAGE** is a web app for **privacy annotation**: upload street / dataset images, draw polygons or lines over sensitive regions (signboards, roads, number plates), **Gaussian-blur** those regions, save the blurred file, and export annotation coordinates to Excel.
+**BLUR_IMAGE** is a web app for **privacy annotation**: upload street / dataset images, draw polygons or lines over sensitive regions (signboards, number plates) or label regions that stay sharp (roads, obstacles), **Gaussian-blur** only the privacy regions, save the file, and export annotation coordinates to Excel.
 
 Typical workflow:
 
 1. Sign up / log in.
 2. Upload images or a whole folder.
 3. Click points on the preview to draw shapes; assign a category.
-4. **Blur & save** — server blurs only those regions, stores annotations, downloads the result.
+4. **Blur & save** — server blurs privacy categories only (`signboard`, `number_plate`); `road` and `obstacle` are stored as annotations without blurring. Downloads the result.
 5. Optionally restore the original, bulk-download edited images as a ZIP, or export coordinates as `.xlsx`.
 
 It is a **Django + Pillow** backend with a **single-page editor**: markup in `templates/app/home.html`, editor logic in `app/static/app/editor.js` (vanilla JS, Canvas + SVG). `test.py` is a standalone prototype of the same blur idea.
@@ -106,6 +106,8 @@ Templates load from `BASE_DIR / "templates"`. Static editor JS is served from th
 ### 5.1 Selective Gaussian blur via padded crop + mask
 
 This is the core algorithm, implemented as `blur_shapes` in `app/imaging.py` and called from `edit_image`. `test.py` is a simpler full-frame prototype of the same mask idea.
+
+Only shapes in blur categories are passed in. `road` and `obstacle` are excluded via `NO_BLUR_CATEGORIES` in `edit_image` — their coordinates are still saved as `AnnotationRow`s, but those pixels are left unchanged. If every shape is a no-blur category, the image file is not rewritten.
 
 **Steps**
 
@@ -256,14 +258,16 @@ Migration `0009` copied owners from the old `UserImages` M2M wrapper, then dropp
 
 ### `AnnotationCategory`
 
-Fixed choices: `signboard`, `road`, `number_plate`.
+Fixed choices: `signboard`, `road`, `number_plate`, `obstacle`.
+
+`NO_BLUR_CATEGORIES` = `{road, obstacle}` — these are labeled and exported, but never passed to `blur_shapes`.
 
 ### `AnnotationRow`
 
 | Field | Meaning |
 |-------|---------|
 | `user` | Who drew the labels. |
-| `category` | One of the three types. |
+| `category` | One of the four types. |
 | `image_name` | Basename of `original_name`. |
 | `coordinate_text` | Serialized shapes (see §5.7). |
 | `updated_at` | Last blur that wrote this row. |
@@ -287,10 +291,12 @@ POST /edit/<id>/  { "annotations": [ {category, shapes: [[{x,y},...]]} ] }
         │
 ensure_original_backup
 _parse_edit_payload (also accepts legacy {points} / {shapes, category})
-read original (or current edited) bytes
-blur_shapes → padded crop + GaussianBlur(22) + mask composite
-encode JPEG/PNG/WebP, save edited file + thumbnail, is_edited=True
-update_or_create AnnotationRow per category
+filter out NO_BLUR_CATEGORIES (road, obstacle) → shapes to blur
+if any blur shapes:
+  read original (or current edited) bytes
+  blur_shapes → padded crop + GaussianBlur(22) + mask composite
+  encode JPEG/PNG/WebP, save edited file + thumbnail, is_edited=True
+update_or_create AnnotationRow per category (including road / obstacle)
         │
 JSON { id, name, url, is_edited }
         │
@@ -298,7 +304,7 @@ Browser downloads file (File System Access or <a download>),
 then deletes the gallery card and selects the next image
 ```
 
-After a successful blur the UI **does not** reload the preview. It downloads the file and **removes** the card (`deleteImage`) so the operator can walk through a folder like a queue.
+After a successful save the UI **does not** reload the preview. It downloads the file and **removes** the card (`deleteImage`) so the operator can walk through a folder like a queue.
 
 ---
 
@@ -382,7 +388,7 @@ Constants in `app/imaging.py`: `BLUR_RADIUS = 22`, `BLUR_PAD = ceil(66)`, `THUMB
 | `delete_all_updated_images` | `_purge_image` on every edited image owned by the user. |
 | `upload_images` | Multi-file upload, EXIF normalize, save working + original + thumbnail, return JSON list. |
 | `delete_image` | `_purge_image` for that owner’s file. |
-| `edit_image` | Validate annotations, `blur_shapes`, save edited file + thumb, persist `AnnotationRow`s. |
+| `edit_image` | Validate annotations, blur only non-`NO_BLUR` shapes, save edited file + thumb when needed, persist `AnnotationRow`s. |
 | `restore_image` | Replace working file with original bytes; rebuild thumb; `is_edited=False`. |
 
 ### Other Python modules

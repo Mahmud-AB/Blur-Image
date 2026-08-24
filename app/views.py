@@ -25,7 +25,7 @@ from .imaging import (
     read_upload_bytes,
     save_thumbnail,
 )
-from .models import AnnotationCategory, AnnotationRow, ImageUpload
+from .models import AnnotationCategory, AnnotationRow, ImageUpload, NO_BLUR_CATEGORIES
 
 User = get_user_model()
 
@@ -430,15 +430,25 @@ def edit_image(request, image_id):
     except ValueError as exc:
         return JsonResponse({"error": str(exc)}, status=400)
 
-    source = image.image if image.is_edited else image.original_image
-    result_bytes = blur_shapes(read_field_bytes(source), image.original_name, shapes)
+    to_blur = [
+        points
+        for category, category_shapes in per_category.items()
+        if category not in NO_BLUR_CATEGORIES
+        for points in category_shapes
+    ]
+    if not per_category:
+        to_blur = shapes
 
-    suffix = file_suffix(image.original_name)
-    image.image.delete(save=False)
-    image.image.save(f"edited_{image_id}{suffix}", ContentFile(result_bytes), save=False)
-    save_thumbnail(image, result_bytes)
-    image.is_edited = True
-    image.save(update_fields=["image", "thumbnail", "is_edited"])
+    if to_blur:
+        source = image.image if image.is_edited else image.original_image
+        result_bytes = blur_shapes(read_field_bytes(source), image.original_name, to_blur)
+
+        suffix = file_suffix(image.original_name)
+        image.image.delete(save=False)
+        image.image.save(f"edited_{image_id}{suffix}", ContentFile(result_bytes), save=False)
+        save_thumbnail(image, result_bytes)
+        image.is_edited = True
+        image.save(update_fields=["image", "thumbnail", "is_edited"])
 
     for category, category_shapes in per_category.items():
         _save_annotation_rows(image, request.user, category, category_shapes)
